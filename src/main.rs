@@ -1,12 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod constants;
+mod context_menu;
 mod file_io;
 mod i18n;
 mod line_column;
 mod status_bar;
-
-use winsafe::{self as w};
 
 use constants::{
     EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETTEXT, EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE,
@@ -14,6 +13,7 @@ use constants::{
     ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR,
     ID_VIEW_WORDWRAP, OLE_PLACEHOLDER,
 };
+use context_menu::show_context_menu;
 use i18n::{get_string, init_language};
 use status_bar::{EM_GETSEL, EM_LINEFROMCHAR, update_status_bar};
 use std::path::PathBuf;
@@ -39,9 +39,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, DispatchMessageW, EC_LEFTMARGIN, GetClientRect, GetCursorPos,
     GetMessageW, GetWindowLongPtrW, LoadIconW, MF_CHECKED, MF_POPUP, MF_STRING, MF_UNCHECKED, MSG,
     PostQuitMessage, RegisterClassW, SWP_NOZORDER, SendMessageW, SetMenu, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, WM_CLOSE,
-    WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY, WM_KEYDOWN, WM_NOTIFY,
-    WM_PAINT, WM_PASTE, WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASSW, WS_CHILD, WS_HSCROLL,
+    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
+    WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY, WM_KEYDOWN, WM_NOTIFY, WM_PAINT,
+    WM_PASTE, WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASSW, WS_CHILD, WS_HSCROLL,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
@@ -153,48 +153,6 @@ fn toggle_word_wrap(edit_hwnd: HWND) {
 
     // Update menu check state (lock released before this call)
     update_wordwrap_menu_check();
-}
-
-// Helper function to show context menu using winsafe menu creation with windows-sys display
-fn show_context_menu(hwnd: HWND, x: i32, y: i32) {
-    unsafe {
-        // Create popup menu with winsafe
-        if let Ok(popup_menu) = w::HMENU::CreatePopupMenu() {
-            // Get localized menu texts from i18n
-            let cut_text = get_string("CONTEXT_CUT");
-            let copy_text = get_string("CONTEXT_COPY");
-            let paste_text = get_string("CONTEXT_PASTE");
-            let selectall_text = get_string("CONTEXT_SELECTALL");
-
-            // Add menu items - winsafe handles UTF-16 conversion
-            let _ = popup_menu.append_item(&[
-                w::MenuItem::Entry {
-                    cmd_id: (ID_EDIT_CUT as u16),
-                    text: &cut_text,
-                },
-                w::MenuItem::Entry {
-                    cmd_id: (ID_EDIT_COPY as u16),
-                    text: &copy_text,
-                },
-                w::MenuItem::Entry {
-                    cmd_id: (ID_EDIT_PASTE as u16),
-                    text: &paste_text,
-                },
-                w::MenuItem::Separator,
-                w::MenuItem::Entry {
-                    cmd_id: (ID_EDIT_SELECTALL as u16),
-                    text: &selectall_text,
-                },
-            ]);
-
-            // Get the raw HMENU handle from winsafe
-            let hmenu = popup_menu.ptr() as *mut std::ffi::c_void;
-
-            // Use windows-sys TrackPopupMenu with precise positioning flags
-            // TPM_LEFTALIGN (0) | TPM_TOPALIGN (0) = 0 means the coordinates are the top-left corner
-            let _ = TrackPopupMenu(hmenu, 0, x, y, 0, hwnd, std::ptr::null());
-        }
-    }
 }
 
 // Helper function to update word wrap menu check state

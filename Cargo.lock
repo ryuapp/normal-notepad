@@ -30,7 +30,6 @@ version = "0.1.0"
 dependencies = [
  "windows-sys",
  "winresource",
- "winsafe",
 ]
 
 [[package]]
@@ -172,9 +171,3 @@ dependencies = [
  "toml",
  "version_check",
 ]
-
-[[package]]
-name = "winsafe"
-version = "0.0.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c46f2d48eb39642e0f57a74637e041c69af704c6a8afaab03558201f64d8870"
