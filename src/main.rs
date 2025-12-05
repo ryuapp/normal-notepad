@@ -26,10 +26,7 @@ static WORD_WRAP_ENABLED: Mutex<bool> = Mutex::new(true);
 static STATUSBAR_VISIBLE: Mutex<bool> = Mutex::new(true);
 static MENU_HANDLE: Mutex<Option<isize>> = Mutex::new(None);
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, EndPaint, GetSysColorBrush, InvalidateRect, LineTo,
-    MoveToEx, SelectObject,
-};
+use windows_sys::Win32::Graphics::Gdi::{CreateFontW, GetSysColorBrush, InvalidateRect};
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{EM_GETMODIFY, EM_SETMARGINS, EM_SETMODIFY, EM_SETSEL};
@@ -37,12 +34,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CheckMenuItem, CreateMenu, CreateWindowExW,
     DefWindowProcW, DestroyWindow, DispatchMessageW, EC_LEFTMARGIN, GetClientRect, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, LoadIconW, MF_CHECKED, MF_POPUP, MF_STRING, MF_UNCHECKED, MSG,
-    PostQuitMessage, RegisterClassW, SWP_NOZORDER, SendMessageW, SetMenu, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
-    WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY, WM_KEYDOWN, WM_NOTIFY, WM_PAINT,
-    WM_PASTE, WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASSW, WS_CHILD, WS_HSCROLL,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, IDC_ARROW, LoadCursorW, LoadIconW, MF_CHECKED,
+    MF_POPUP, MF_STRING, MF_UNCHECKED, MSG, PostQuitMessage, RegisterClassW, SWP_NOZORDER,
+    SendMessageW, SetCursor, SetMenu, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY,
+    WM_KEYDOWN, WM_NOTIFY, WM_PASTE, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASSW,
+    WS_CHILD, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 // Helper function to check if file is "Untitled" or "無題"
@@ -191,45 +188,6 @@ fn update_statusbar_menu_check() {
                     );
                 }
             }
-        }
-    }
-}
-
-// Separator window procedure for thin light gray lines (vertical or horizontal)
-extern "system" fn separator_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
-        match msg {
-            WM_PAINT => {
-                let mut ps = std::mem::zeroed();
-                BeginPaint(hwnd, &mut ps);
-
-                let mut rect: RECT = std::mem::zeroed();
-                GetClientRect(hwnd, &mut rect);
-
-                // Gray color (RGB: 210, 209, 208)
-                let separator_color = 0x00D0D1D2u32;
-                let pen = CreatePen(0, 1, separator_color);
-                SelectObject(ps.hdc, pen as *mut std::ffi::c_void);
-
-                let width = rect.right - rect.left;
-                let height = rect.bottom - rect.top;
-
-                if height > width {
-                    // Vertical line - draw in the middle
-                    let x = width / 2;
-                    MoveToEx(ps.hdc, x, rect.top, std::ptr::null_mut());
-                    LineTo(ps.hdc, x, rect.bottom);
-                } else {
-                    // Horizontal line - draw in the middle
-                    let y = height / 2;
-                    MoveToEx(ps.hdc, rect.left, y, std::ptr::null_mut());
-                    LineTo(ps.hdc, rect.right, y);
-                }
-
-                EndPaint(hwnd, &ps);
-                0
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 }
@@ -466,7 +424,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 SetWindowLongPtrW(hwnd, 16, separator_hwnd as isize);
 
                 // Create 3 status bar sections
-                let status_class = "STATIC\0".encode_utf16().collect::<Vec<_>>();
+                let status_class = "StatusTextClass\0".encode_utf16().collect::<Vec<_>>();
                 const SS_LEFT: u32 = 0x0000;
                 const SS_RIGHT: u32 = 0x0002;
                 const SS_CENTERIMAGE: u32 = 0x0200;
@@ -782,6 +740,73 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
 
                 0
+            }
+            WM_SETCURSOR => {
+                let hit_test = (lparam & 0xFFFF) as u32;
+                const HTCLIENT: u32 = 1;
+
+                // Only handle when in client area
+                if hit_test == HTCLIENT {
+                    let cursor_hwnd = wparam as HWND;
+
+                    // Check if status bar is visible
+                    let is_statusbar_visible = if let Ok(visible) = STATUSBAR_VISIBLE.lock() {
+                        *visible
+                    } else {
+                        true
+                    };
+
+                    if is_statusbar_visible {
+                        // Get cursor position
+                        let mut cursor_pt = std::mem::zeroed();
+                        GetCursorPos(&mut cursor_pt);
+
+                        let mut window_rect: RECT = std::mem::zeroed();
+                        GetWindowRect(hwnd, &mut window_rect);
+
+                        let mut client_rect: RECT = std::mem::zeroed();
+                        GetClientRect(hwnd, &mut client_rect);
+
+                        // Calculate status bar area
+                        let status_height = 24;
+                        let separator_height = 1;
+                        let status_total_height = status_height + separator_height;
+
+                        // Calculate status bar top position in screen coordinates
+                        let status_bar_top = window_rect.bottom - status_total_height;
+
+                        // If cursor is in status bar area (including empty spaces), set arrow cursor
+                        if cursor_pt.y >= status_bar_top {
+                            let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+                            SetCursor(cursor);
+                            return 1;
+                        }
+                    }
+
+                    // Also handle child window status bar components
+                    if cursor_hwnd != hwnd {
+                        let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
+                        let sep1_hwnd = GetWindowLongPtrW(hwnd, 24) as HWND;
+                        let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                        let sep2_hwnd = GetWindowLongPtrW(hwnd, 40) as HWND;
+                        let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                        let separator_hwnd = GetWindowLongPtrW(hwnd, 16) as HWND;
+
+                        if cursor_hwnd == char_hwnd
+                            || cursor_hwnd == sep1_hwnd
+                            || cursor_hwnd == pos_hwnd
+                            || cursor_hwnd == sep2_hwnd
+                            || cursor_hwnd == encoding_hwnd
+                            || cursor_hwnd == separator_hwnd
+                        {
+                            let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+                            SetCursor(cursor);
+                            return 1;
+                        }
+                    }
+                }
+
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_CONTEXTMENU => {
                 // Show context menu when right-clicked in RichEdit
@@ -1117,21 +1142,8 @@ fn main() {
 
         RegisterClassW(&wnd_class);
 
-        // Register separator window class
-        let separator_class_name = "SeparatorClass\0".encode_utf16().collect::<Vec<_>>();
-        let separator_class = WNDCLASSW {
-            style: CS_VREDRAW | CS_HREDRAW,
-            lpfnWndProc: Some(separator_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: hinstance,
-            hIcon: std::ptr::null_mut(),
-            hCursor: std::ptr::null_mut(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            lpszMenuName: std::ptr::null(),
-            lpszClassName: separator_class_name.as_ptr(),
-        };
-        RegisterClassW(&separator_class);
+        // Register status bar window classes (separator and text)
+        status_bar::register_status_bar_classes();
 
         let window_title_str = format!("{}\0", get_string("WINDOW_TITLE"));
         let window_title = window_title_str.encode_utf16().collect::<Vec<_>>();
