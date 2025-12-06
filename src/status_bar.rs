@@ -2,9 +2,16 @@ use crate::i18n::get_string;
 use crate::line_column::calculate_line_column;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
-use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreatePen, EndPaint, GetSysColorBrush, LineTo, MoveToEx, SelectObject,
+};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CS_HREDRAW, CS_VREDRAW, DefWindowProcW, GetClientRect, IDC_ARROW, LoadCursorW, SendMessageW,
+    SetCursor, SetWindowTextW, WM_PAINT, WM_SETCURSOR, WNDCLASSW,
+};
 
 pub const EM_GETSEL: u32 = 0x00B0;
 pub const EM_LINEFROMCHAR: u32 = 0x00C9;
@@ -27,6 +34,214 @@ static COUNT_NEWLINE_AS_ONE: AtomicBool = AtomicBool::new(true);
 
 // Cache for previous status bar values
 static LAST_STATUS: Mutex<Option<(i32, i32, i32)>> = Mutex::new(None);
+
+// Separator window procedure for thin light gray lines (vertical or horizontal)
+pub extern "system" fn separator_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_SETCURSOR => {
+                // Set cursor to default arrow when hovering over status bar
+                let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+                SetCursor(cursor);
+                1
+            }
+            WM_PAINT => {
+                let mut ps = std::mem::zeroed();
+                BeginPaint(hwnd, &mut ps);
+
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+
+                // Gray color (RGB: 210, 209, 208)
+                let separator_color = 0x00D0D1D2u32;
+                let pen = CreatePen(0, 1, separator_color);
+                SelectObject(ps.hdc, pen as *mut std::ffi::c_void);
+
+                let width = rect.right - rect.left;
+                let height = rect.bottom - rect.top;
+
+                if height > width {
+                    // Vertical line - draw in the middle
+                    let x = width / 2;
+                    MoveToEx(ps.hdc, x, rect.top, std::ptr::null_mut());
+                    LineTo(ps.hdc, x, rect.bottom);
+                } else {
+                    // Horizontal line - draw in the middle
+                    let y = height / 2;
+                    MoveToEx(ps.hdc, rect.left, y, std::ptr::null_mut());
+                    LineTo(ps.hdc, rect.right, y);
+                }
+
+                EndPaint(hwnd, &ps);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+// Status text window procedure (for status bar text labels)
+pub extern "system" fn status_text_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_SETCURSOR => {
+                // Set cursor to default arrow
+                let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+                SetCursor(cursor);
+                1
+            }
+            WM_PAINT => {
+                // Paint text using STATIC control behavior
+                use windows_sys::Win32::Graphics::Gdi::{
+                    BeginPaint, DrawTextW, EndPaint, FillRect, SetBkMode, SetTextColor, TRANSPARENT,
+                };
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
+
+                const DT_LEFT: u32 = 0x00000000;
+                const DT_RIGHT: u32 = 0x00000002;
+                const DT_SINGLELINE: u32 = 0x00000020;
+                const DT_VCENTER: u32 = 0x00000004;
+                const GWL_STYLE: i32 = -16;
+
+                let mut ps = std::mem::zeroed();
+                BeginPaint(hwnd, &mut ps);
+
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+
+                // Fill background
+                const COLOR_BTNFACE: i32 = 15;
+                let brush = GetSysColorBrush(COLOR_BTNFACE);
+                FillRect(ps.hdc, &rect, brush);
+
+                // Get window text
+                const WM_GETTEXT: u32 = 0x000D;
+                const WM_GETTEXTLENGTH: u32 = 0x000E;
+                let text_len = windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    hwnd,
+                    WM_GETTEXTLENGTH,
+                    0,
+                    0,
+                ) as usize;
+
+                if text_len > 0 {
+                    let mut buffer = vec![0u16; text_len + 1];
+                    windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                        hwnd,
+                        WM_GETTEXT,
+                        buffer.len(),
+                        buffer.as_mut_ptr() as isize,
+                    );
+
+                    // Set text properties
+                    SetBkMode(ps.hdc, TRANSPARENT as i32);
+                    const COLOR_BTNTEXT: i32 = 18;
+                    SetTextColor(
+                        ps.hdc,
+                        windows_sys::Win32::Graphics::Gdi::GetSysColor(COLOR_BTNTEXT),
+                    );
+
+                    // Create and set small font for status bar
+                    use windows_sys::Win32::Graphics::Gdi::{CreateFontW, DeleteObject, FW_NORMAL};
+                    const DEFAULT_CHARSET: u32 = 1;
+                    const OUT_DEFAULT_PRECIS: u32 = 0;
+                    const CLIP_DEFAULT_PRECIS: u32 = 0;
+                    const DEFAULT_QUALITY: u32 = 0;
+                    const DEFAULT_PITCH: u32 = 0;
+                    const FF_DONTCARE: u32 = 0;
+
+                    let font_name = "Segoe UI\0".encode_utf16().collect::<Vec<_>>();
+                    let font = CreateFontW(
+                        -12, // Height (negative = point size)
+                        0,   // Width
+                        0,   // Escapement
+                        0,   // Orientation
+                        FW_NORMAL as i32,
+                        0, // Italic
+                        0, // Underline
+                        0, // StrikeOut
+                        DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        DEFAULT_QUALITY,
+                        (DEFAULT_PITCH | FF_DONTCARE) << 8,
+                        font_name.as_ptr(),
+                    );
+                    let old_font = SelectObject(ps.hdc, font as *mut std::ffi::c_void);
+
+                    // Check style for alignment
+                    const SS_RIGHT: isize = 0x0002;
+                    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                    let format = if (style & SS_RIGHT) != 0 {
+                        DT_RIGHT | DT_SINGLELINE | DT_VCENTER
+                    } else {
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER
+                    };
+
+                    DrawTextW(ps.hdc, buffer.as_ptr(), text_len as i32, &mut rect, format);
+
+                    // Restore old font and delete created font
+                    SelectObject(ps.hdc, old_font);
+                    DeleteObject(font);
+                }
+
+                EndPaint(hwnd, &ps);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+// Register status bar window classes
+pub unsafe fn register_status_bar_classes() {
+    unsafe {
+        let hinstance = GetModuleHandleW(std::ptr::null());
+        const COLOR_BTNFACE: i32 = 15;
+
+        // Register separator window class
+        let separator_class_name = "SeparatorClass\0".encode_utf16().collect::<Vec<_>>();
+        let separator_class = WNDCLASSW {
+            style: CS_VREDRAW | CS_HREDRAW,
+            lpfnWndProc: Some(separator_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance,
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: separator_class_name.as_ptr(),
+        };
+        windows_sys::Win32::UI::WindowsAndMessaging::RegisterClassW(&separator_class);
+
+        // Register status text window class
+        let status_text_class_name = "StatusTextClass\0".encode_utf16().collect::<Vec<_>>();
+        let status_text_class = WNDCLASSW {
+            style: CS_VREDRAW | CS_HREDRAW,
+            lpfnWndProc: Some(status_text_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance,
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: status_text_class_name.as_ptr(),
+        };
+        windows_sys::Win32::UI::WindowsAndMessaging::RegisterClassW(&status_text_class);
+    }
+}
 
 pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
     unsafe {
@@ -124,6 +339,7 @@ pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
                 );
                 let char_utf16: Vec<u16> = char_text.encode_utf16().collect();
                 SetWindowTextW(char_hwnd, char_utf16.as_ptr());
+                InvalidateRect(char_hwnd, std::ptr::null(), 1);
 
                 // Update line and column in same section
                 let pos_format = get_string("STATUS_LINE_COL");
@@ -135,6 +351,7 @@ pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
                 );
                 let pos_utf16: Vec<u16> = pos_text.encode_utf16().collect();
                 SetWindowTextW(pos_hwnd, pos_utf16.as_ptr());
+                InvalidateRect(pos_hwnd, std::ptr::null(), 1);
             }
         }
     }
