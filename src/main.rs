@@ -8,10 +8,11 @@ mod line_column;
 mod status_bar;
 
 use constants::{
-    EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETTEXT, EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE,
-    ICON_BIG, ICON_SMALL, ID_EDIT_COPY, ID_EDIT_CUT, ID_EDIT_PASTE, ID_EDIT_SELECTALL,
-    ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR,
-    ID_VIEW_WORDWRAP, OLE_PLACEHOLDER,
+    EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETLANGOPTIONS, EM_GETTEXT, EM_SETLANGOPTIONS,
+    EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE, ICON_BIG, ICON_SMALL, ID_EDIT_COPY,
+    ID_EDIT_CUT, ID_EDIT_PASTE, ID_EDIT_SELECTALL, ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN,
+    ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT,
+    IMF_DUALFONT, OLE_PLACEHOLDER,
 };
 use context_menu::show_context_menu;
 use i18n::{get_string, init_language};
@@ -198,12 +199,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_CREATE => {
                 let hinstance = GetModuleHandleW(std::ptr::null());
 
-                // Load RichEdit library
-                let richedit_lib = "Riched20.dll\0".encode_utf16().collect::<Vec<_>>();
+                // Load RichEdit library (MSFTEDIT.DLL for RichEdit 4.1+)
+                let richedit_lib = "Msftedit.dll\0".encode_utf16().collect::<Vec<_>>();
                 let _ =
                     windows_sys::Win32::System::LibraryLoader::LoadLibraryW(richedit_lib.as_ptr());
 
-                let richedit_class = "RichEdit20W\0".encode_utf16().collect::<Vec<_>>();
+                let richedit_class = "RICHEDIT50W\0".encode_utf16().collect::<Vec<_>>();
 
                 let edit_hwnd = CreateWindowExW(
                     0,
@@ -266,6 +267,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     font_name.as_ptr(),
                 );
                 SendMessageW(edit_hwnd, WM_SETFONT, hfont_edit as usize, 1);
+
+                // Disable auto font (IMF_AUTOFONT | IMF_DUALFONT) to prevent font changes
+                let lang_options = SendMessageW(edit_hwnd, EM_GETLANGOPTIONS, 0, 0);
+                let new_options = lang_options & !(IMF_AUTOFONT | IMF_DUALFONT) as isize;
+                SendMessageW(edit_hwnd, EM_SETLANGOPTIONS, 0, new_options);
 
                 // Create menu bar
                 let hmenu = CreateMenu();
