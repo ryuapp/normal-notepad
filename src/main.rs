@@ -9,10 +9,10 @@ mod status_bar;
 
 use constants::{
     EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETLANGOPTIONS, EM_GETTEXT, EM_SETLANGOPTIONS,
-    EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE, ICON_BIG, ICON_SMALL, ID_EDIT_COPY,
-    ID_EDIT_CUT, ID_EDIT_PASTE, ID_EDIT_SELECTALL, ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN,
-    ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT,
-    IMF_DUALFONT, OLE_PLACEHOLDER,
+    EM_SETPARAFORMAT, EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE, ICON_BIG, ICON_SMALL,
+    ID_EDIT_COPY, ID_EDIT_CUT, ID_EDIT_PASTE, ID_EDIT_SELECTALL, ID_FILE_EXIT, ID_FILE_NEW,
+    ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT,
+    IMF_DUALFONT, OLE_PLACEHOLDER, PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
 };
 use context_menu::show_context_menu;
 use i18n::{get_string, init_language};
@@ -272,6 +272,70 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let lang_options = SendMessageW(edit_hwnd, EM_GETLANGOPTIONS, 0, 0);
                 let new_options = lang_options & !(IMF_AUTOFONT | IMF_DUALFONT) as isize;
                 SendMessageW(edit_hwnd, EM_SETLANGOPTIONS, 0, new_options);
+
+                // Set reduced line spacing using PARAFORMAT2
+                #[repr(C)]
+                #[allow(non_snake_case)]
+                struct PARAFORMAT2 {
+                    cbSize: u32,
+                    dwMask: u32,
+                    wNumbering: u16,
+                    wReserved: u16,
+                    dxStartIndent: i32,
+                    dxRightIndent: i32,
+                    dxOffset: i32,
+                    wAlignment: u16,
+                    cTabCount: i16,
+                    rgxTabs: [i32; 32],
+                    dySpaceBefore: i32,
+                    dySpaceAfter: i32,
+                    dyLineSpacing: i32,
+                    sStyle: i16,
+                    bLineSpacingRule: u8,
+                    bOutlineLevel: u8,
+                    wShadingWeight: u16,
+                    wShadingStyle: u16,
+                    wNumberingStart: u16,
+                    wNumberingStyle: u16,
+                    wNumberingTab: u16,
+                    wBorderSpace: u16,
+                    wBorderWidth: u16,
+                    wBorders: u16,
+                }
+
+                let pf = PARAFORMAT2 {
+                    cbSize: std::mem::size_of::<PARAFORMAT2>() as u32,
+                    dwMask: PFM_LINESPACING | PFM_SPACEBEFORE | PFM_SPACEAFTER,
+                    wNumbering: 0,
+                    wReserved: 0,
+                    dxStartIndent: 0,
+                    dxRightIndent: 0,
+                    dxOffset: 0,
+                    wAlignment: 0,
+                    cTabCount: 0,
+                    rgxTabs: [0; 32],
+                    dySpaceBefore: 0,
+                    dySpaceAfter: 0,
+                    dyLineSpacing: 260, // 13pt in twips (260 = 13 * 20)
+                    sStyle: 0,
+                    bLineSpacingRule: 4, // Rule 4: Exact spacing
+                    bOutlineLevel: 0,
+                    wShadingWeight: 0,
+                    wShadingStyle: 0,
+                    wNumberingStart: 0,
+                    wNumberingStyle: 0,
+                    wNumberingTab: 0,
+                    wBorderSpace: 0,
+                    wBorderWidth: 0,
+                    wBorders: 0,
+                };
+
+                SendMessageW(
+                    edit_hwnd,
+                    EM_SETPARAFORMAT,
+                    0,
+                    &pf as *const PARAFORMAT2 as isize,
+                );
 
                 // Create menu bar
                 let hmenu = CreateMenu();
