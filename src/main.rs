@@ -23,6 +23,7 @@ use std::sync::Mutex;
 // Global variables for file state
 static CURRENT_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static LAST_MODIFIED_STATE: Mutex<bool> = Mutex::new(false);
+static SAVED_CONTENT: Mutex<String> = Mutex::new(String::new());
 static WORD_WRAP_ENABLED: Mutex<bool> = Mutex::new(true);
 static STATUSBAR_VISIBLE: Mutex<bool> = Mutex::new(true);
 static MENU_HANDLE: Mutex<Option<isize>> = Mutex::new(None);
@@ -30,7 +31,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateFontW, GetSysColorBrush, InvalidateRect};
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_GETMODIFY, EM_SETMARGINS, EM_SETMODIFY, EM_SETSEL};
+use windows_sys::Win32::UI::Controls::{EM_SETMARGINS, EM_SETMODIFY, EM_SETSEL};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CheckMenuItem, CreateMenu, CreateWindowExW,
@@ -56,7 +57,27 @@ fn is_untitled_file(path: &PathBuf) -> bool {
 // Helper function to update title based on modified state
 fn update_title_if_needed(hwnd: HWND, edit_hwnd: HWND) {
     unsafe {
-        let is_modified = SendMessageW(edit_hwnd, EM_GETMODIFY, 0, 0) != 0;
+        // Get current text content
+        let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize; // WM_GETTEXTLENGTH
+        let current_text = if text_len > 0 {
+            let mut buffer: Vec<u16> = vec![0; text_len + 1];
+            SendMessageW(
+                edit_hwnd,
+                0x000D,
+                (text_len + 1) as usize,
+                buffer.as_mut_ptr() as isize,
+            );
+            String::from_utf16(&buffer[..text_len]).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Compare with saved content
+        let is_modified = if let Ok(saved) = SAVED_CONTENT.lock() {
+            *saved != current_text
+        } else {
+            false
+        };
 
         // Check if state changed
         if let Ok(mut last_state) = LAST_MODIFIED_STATE.lock() {
@@ -697,6 +718,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon as isize);
                 }
 
+                // Reset modified flag after all initialization
+                SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+
                 0
             }
             WM_GETMINMAXINFO => {
@@ -1142,6 +1166,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     *current_file = Some(path.clone());
                                 }
 
+                                // Save content for comparison
+                                if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                    *saved = content;
+                                }
+
                                 // Reset modified flag
                                 SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
 
@@ -1168,7 +1197,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     if let Some(new_path) = file_io::save_file_dialog() {
                                         let text_len =
                                             SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
-                                        if text_len > 0 {
+                                        let text = if text_len > 0 {
                                             let mut buffer: Vec<u16> = vec![0; text_len + 1];
                                             SendMessageW(
                                                 edit_hwnd,
@@ -1176,32 +1205,34 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                                 (text_len + 1) as usize,
                                                 buffer.as_mut_ptr() as isize,
                                             );
-                                            if let Ok(text) =
-                                                String::from_utf16(&buffer[..text_len])
-                                            {
-                                                let _ = file_io::save_file(&new_path, &text);
-                                                *CURRENT_FILE.lock().unwrap() =
-                                                    Some(new_path.clone());
-                                                SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
-                                                if let Some(filename) = new_path.file_name() {
-                                                    if let Some(filename_str) = filename.to_str() {
-                                                        let app_name = get_string("WINDOW_TITLE");
-                                                        let title = format!(
-                                                            "{} - {}\0",
-                                                            filename_str, app_name
-                                                        );
-                                                        let title_utf16: Vec<u16> =
-                                                            title.encode_utf16().collect();
-                                                        SetWindowTextW(hwnd, title_utf16.as_ptr());
-                                                    }
-                                                }
+                                            String::from_utf16(&buffer[..text_len])
+                                                .unwrap_or_default()
+                                        } else {
+                                            String::new()
+                                        };
+
+                                        let _ = file_io::save_file(&new_path, &text);
+                                        *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                                        // Save content for comparison
+                                        if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                            *saved = text;
+                                        }
+                                        SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+                                        if let Some(filename) = new_path.file_name() {
+                                            if let Some(filename_str) = filename.to_str() {
+                                                let app_name = get_string("WINDOW_TITLE");
+                                                let title =
+                                                    format!("{} - {}\0", filename_str, app_name);
+                                                let title_utf16: Vec<u16> =
+                                                    title.encode_utf16().collect();
+                                                SetWindowTextW(hwnd, title_utf16.as_ptr());
                                             }
                                         }
                                     }
                                 } else {
                                     // Regular save
                                     let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
-                                    if text_len > 0 {
+                                    let text = if text_len > 0 {
                                         let mut buffer: Vec<u16> = vec![0; text_len + 1];
                                         SendMessageW(
                                             edit_hwnd,
@@ -1209,21 +1240,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             (text_len + 1) as usize,
                                             buffer.as_mut_ptr() as isize,
                                         );
-                                        if let Ok(text) = String::from_utf16(&buffer[..text_len]) {
-                                            let _ = file_io::save_file(path, &text);
-                                            SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
-                                            if let Some(filename) = path.file_name() {
-                                                if let Some(filename_str) = filename.to_str() {
-                                                    let app_name = get_string("WINDOW_TITLE");
-                                                    let title = format!(
-                                                        "{} - {}\0",
-                                                        filename_str, app_name
-                                                    );
-                                                    let title_utf16: Vec<u16> =
-                                                        title.encode_utf16().collect();
-                                                    SetWindowTextW(hwnd, title_utf16.as_ptr());
-                                                }
-                                            }
+                                        String::from_utf16(&buffer[..text_len]).unwrap_or_default()
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    let _ = file_io::save_file(path, &text);
+                                    // Save content for comparison
+                                    if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                        *saved = text;
+                                    }
+                                    SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+                                    if let Some(filename) = path.file_name() {
+                                        if let Some(filename_str) = filename.to_str() {
+                                            let app_name = get_string("WINDOW_TITLE");
+                                            let title =
+                                                format!("{} - {}\0", filename_str, app_name);
+                                            let title_utf16: Vec<u16> =
+                                                title.encode_utf16().collect();
+                                            SetWindowTextW(hwnd, title_utf16.as_ptr());
                                         }
                                     }
                                 }
@@ -1235,7 +1270,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         // Show save dialog
                         if let Some(new_path) = file_io::save_file_dialog() {
                             let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
-                            if text_len > 0 {
+                            let text = if text_len > 0 {
                                 let mut buffer: Vec<u16> = vec![0; text_len + 1];
                                 SendMessageW(
                                     edit_hwnd,
@@ -1243,20 +1278,24 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     (text_len + 1) as usize,
                                     buffer.as_mut_ptr() as isize,
                                 );
-                                if let Ok(text) = String::from_utf16(&buffer[..text_len]) {
-                                    let _ = file_io::save_file(&new_path, &text);
-                                    *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
-                                    SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
-                                    if let Some(filename) = new_path.file_name() {
-                                        if let Some(filename_str) = filename.to_str() {
-                                            let app_name = get_string("WINDOW_TITLE");
-                                            let title =
-                                                format!("{} - {}\0", filename_str, app_name);
-                                            let title_utf16: Vec<u16> =
-                                                title.encode_utf16().collect();
-                                            SetWindowTextW(hwnd, title_utf16.as_ptr());
-                                        }
-                                    }
+                                String::from_utf16(&buffer[..text_len]).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            let _ = file_io::save_file(&new_path, &text);
+                            *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                            // Save content for comparison
+                            if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                *saved = text.clone();
+                            }
+                            SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+                            if let Some(filename) = new_path.file_name() {
+                                if let Some(filename_str) = filename.to_str() {
+                                    let app_name = get_string("WINDOW_TITLE");
+                                    let title = format!("{} - {}\0", filename_str, app_name);
+                                    let title_utf16: Vec<u16> = title.encode_utf16().collect();
+                                    SetWindowTextW(hwnd, title_utf16.as_ptr());
                                 }
                             }
                         }
@@ -1494,7 +1533,7 @@ fn main() {
                                 drop(current_file); // Release lock before showing dialog
                                 if let Some(new_path) = file_io::save_file_dialog() {
                                     let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
-                                    if text_len > 0 {
+                                    let text = if text_len > 0 {
                                         let mut buffer: Vec<u16> = vec![0; text_len + 1];
                                         SendMessageW(
                                             edit_hwnd,
@@ -1502,29 +1541,33 @@ fn main() {
                                             (text_len + 1) as usize,
                                             buffer.as_mut_ptr() as isize,
                                         );
-                                        if let Ok(text) = String::from_utf16(&buffer[..text_len]) {
-                                            let _ = file_io::save_file(&new_path, &text);
-                                            *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
-                                            SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
-                                            if let Some(filename) = new_path.file_name() {
-                                                if let Some(filename_str) = filename.to_str() {
-                                                    let app_name = get_string("WINDOW_TITLE");
-                                                    let title = format!(
-                                                        "{} - {}\0",
-                                                        filename_str, app_name
-                                                    );
-                                                    let title_utf16: Vec<u16> =
-                                                        title.encode_utf16().collect();
-                                                    SetWindowTextW(hwnd, title_utf16.as_ptr());
-                                                }
-                                            }
+                                        String::from_utf16(&buffer[..text_len]).unwrap_or_default()
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    let _ = file_io::save_file(&new_path, &text);
+                                    *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                                    // Save content for comparison
+                                    if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                        *saved = text.clone();
+                                    }
+                                    SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+                                    if let Some(filename) = new_path.file_name() {
+                                        if let Some(filename_str) = filename.to_str() {
+                                            let app_name = get_string("WINDOW_TITLE");
+                                            let title =
+                                                format!("{} - {}\0", filename_str, app_name);
+                                            let title_utf16: Vec<u16> =
+                                                title.encode_utf16().collect();
+                                            SetWindowTextW(hwnd, title_utf16.as_ptr());
                                         }
                                     }
                                 }
                             } else {
                                 // Regular save
                                 let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
-                                if text_len > 0 {
+                                let text = if text_len > 0 {
                                     let mut buffer: Vec<u16> = vec![0; text_len + 1];
                                     SendMessageW(
                                         edit_hwnd,
@@ -1532,19 +1575,23 @@ fn main() {
                                         (text_len + 1) as usize,
                                         buffer.as_mut_ptr() as isize,
                                     );
-                                    if let Ok(text) = String::from_utf16(&buffer[..text_len]) {
-                                        let _ = file_io::save_file(path, &text);
-                                        SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
-                                        if let Some(filename) = path.file_name() {
-                                            if let Some(filename_str) = filename.to_str() {
-                                                let app_name = get_string("WINDOW_TITLE");
-                                                let title =
-                                                    format!("{} - {}\0", filename_str, app_name);
-                                                let title_utf16: Vec<u16> =
-                                                    title.encode_utf16().collect();
-                                                SetWindowTextW(hwnd, title_utf16.as_ptr());
-                                            }
-                                        }
+                                    String::from_utf16(&buffer[..text_len]).unwrap_or_default()
+                                } else {
+                                    String::new()
+                                };
+
+                                let _ = file_io::save_file(path, &text);
+                                // Save content for comparison
+                                if let Ok(mut saved) = SAVED_CONTENT.lock() {
+                                    *saved = text.clone();
+                                }
+                                SendMessageW(edit_hwnd, EM_SETMODIFY, 0, 0);
+                                if let Some(filename) = path.file_name() {
+                                    if let Some(filename_str) = filename.to_str() {
+                                        let app_name = get_string("WINDOW_TITLE");
+                                        let title = format!("{} - {}\0", filename_str, app_name);
+                                        let title_utf16: Vec<u16> = title.encode_utf16().collect();
+                                        SetWindowTextW(hwnd, title_utf16.as_ptr());
                                     }
                                 }
                             }
