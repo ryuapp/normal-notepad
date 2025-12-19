@@ -39,8 +39,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MF_POPUP, MF_STRING, MF_UNCHECKED, MSG, PostQuitMessage, RegisterClassW, SWP_NOZORDER,
     SendMessageW, SetCursor, SetMenu, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
     TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY,
-    WM_KEYDOWN, WM_NOTIFY, WM_PASTE, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASSW,
-    WS_CHILD, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_NOTIFY, WM_PASTE, WM_SETCURSOR, WM_SETFONT, WM_SETICON,
+    WM_SIZE, WNDCLASSW, WS_CHILD, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 // Helper function to check if file is "Untitled" or "無題"
@@ -619,6 +619,29 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon as isize);
                 }
 
+                0
+            }
+            WM_GETMINMAXINFO => {
+                #[repr(C)]
+                #[allow(non_snake_case)]
+                struct MINMAXINFO {
+                    ptReserved: POINT,
+                    ptMaxSize: POINT,
+                    ptMaxPosition: POINT,
+                    ptMinTrackSize: POINT,
+                    ptMaxTrackSize: POINT,
+                }
+
+                #[repr(C)]
+                struct POINT {
+                    x: i32,
+                    y: i32,
+                }
+
+                let mmi = lparam as *mut MINMAXINFO;
+                if !mmi.is_null() {
+                    (*mmi).ptMinTrackSize.x = 230; // Minimum width
+                }
                 0
             }
             WM_SIZE => {
