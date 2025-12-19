@@ -605,12 +605,90 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     std::ptr::null_mut(),
                 );
 
+                let sep3_hwnd = CreateWindowExW(
+                    0,
+                    separator_class.as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    20,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    hinstance,
+                    std::ptr::null_mut(),
+                );
+
+                // Zoom level display
+                let zoom_hwnd = CreateWindowExW(
+                    0,
+                    status_class.as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                    0,
+                    0,
+                    32,
+                    20,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    hinstance,
+                    std::ptr::null_mut(),
+                );
+
+                SendMessageW(zoom_hwnd, WM_SETFONT, hfont as usize, 1);
+
+                // Set initial zoom text
+                let zoom_text = "100%\0".encode_utf16().collect::<Vec<_>>();
+                SetWindowTextW(zoom_hwnd, zoom_text.as_ptr());
+
+                let sep4_hwnd = CreateWindowExW(
+                    0,
+                    separator_class.as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    0,
+                    20,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    hinstance,
+                    std::ptr::null_mut(),
+                );
+
+                // Line break format display
+                let linebreak_hwnd = CreateWindowExW(
+                    0,
+                    status_class.as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                    0,
+                    0,
+                    102,
+                    20,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    hinstance,
+                    std::ptr::null_mut(),
+                );
+
+                SendMessageW(linebreak_hwnd, WM_SETFONT, hfont as usize, 1);
+
+                // Set initial line break text
+                let linebreak_text = "Windows (CRLF)\0".encode_utf16().collect::<Vec<_>>();
+                SetWindowTextW(linebreak_hwnd, linebreak_text.as_ptr());
+
                 // Store handles
                 SetWindowLongPtrW(hwnd, 8, char_hwnd as isize);
                 SetWindowLongPtrW(hwnd, 24, sep1_hwnd as isize);
                 SetWindowLongPtrW(hwnd, 32, pos_hwnd as isize);
                 SetWindowLongPtrW(hwnd, 40, sep2_hwnd as isize);
                 SetWindowLongPtrW(hwnd, 48, encoding_hwnd as isize);
+                SetWindowLongPtrW(hwnd, 56, sep3_hwnd as isize);
+                SetWindowLongPtrW(hwnd, 64, zoom_hwnd as isize);
+                SetWindowLongPtrW(hwnd, 72, sep4_hwnd as isize);
+                SetWindowLongPtrW(hwnd, 80, linebreak_hwnd as isize);
 
                 // Set window icon from resources (ID 1)
                 let hicon = LoadIconW(hinstance, 1 as *const u16);
@@ -698,20 +776,30 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
                     let sep2_hwnd = GetWindowLongPtrW(hwnd, 40) as HWND;
                     let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                    let sep3_hwnd = GetWindowLongPtrW(hwnd, 56) as HWND;
+                    let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                    let sep4_hwnd = GetWindowLongPtrW(hwnd, 72) as HWND;
+                    let linebreak_hwnd = GetWindowLongPtrW(hwnd, 80) as HWND;
                     let scrollbar_width = 16;
                     let status_y = rect.top + edit_height + separator_height;
 
                     // Set widths for each section
                     let char_width = 80;
                     let separator_width = 2;
-                    let pos_width = 120;
-                    let encoding_width = 80;
+                    let pos_width = 122;
+                    let zoom_width = 32;
+                    let linebreak_width = 102;
+                    let encoding_width = 87;
                     let margin = 8;
                     let sep_margin = 8; // Margin around separators
 
                     let total_status_width = char_width
                         + (separator_width + sep_margin * 2)
                         + pos_width
+                        + (separator_width + sep_margin * 2)
+                        + zoom_width
+                        + (separator_width + sep_margin * 2)
+                        + linebreak_width
                         + (separator_width + sep_margin * 2)
                         + encoding_width;
                     let start_x = rect.right - scrollbar_width - total_status_width - margin;
@@ -770,6 +858,98 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         );
                     }
 
+                    if zoom_hwnd != HWND::default() {
+                        SetWindowPos(
+                            zoom_hwnd,
+                            std::ptr::null_mut(),
+                            start_x
+                                + char_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + pos_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin,
+                            status_y,
+                            zoom_width,
+                            status_height,
+                            SWP_NOZORDER,
+                        );
+                    }
+
+                    if sep3_hwnd != HWND::default() {
+                        SetWindowPos(
+                            sep3_hwnd,
+                            std::ptr::null_mut(),
+                            start_x
+                                + char_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + pos_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + zoom_width
+                                + sep_margin,
+                            status_y,
+                            separator_width,
+                            status_height,
+                            SWP_NOZORDER,
+                        );
+                    }
+
+                    if linebreak_hwnd != HWND::default() {
+                        SetWindowPos(
+                            linebreak_hwnd,
+                            std::ptr::null_mut(),
+                            start_x
+                                + char_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + pos_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + zoom_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin,
+                            status_y,
+                            linebreak_width,
+                            status_height,
+                            SWP_NOZORDER,
+                        );
+                    }
+
+                    if sep4_hwnd != HWND::default() {
+                        SetWindowPos(
+                            sep4_hwnd,
+                            std::ptr::null_mut(),
+                            start_x
+                                + char_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + pos_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + zoom_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + linebreak_width
+                                + sep_margin,
+                            status_y,
+                            separator_width,
+                            status_height,
+                            SWP_NOZORDER,
+                        );
+                    }
+
                     if encoding_hwnd != HWND::default() {
                         SetWindowPos(
                             encoding_hwnd,
@@ -780,6 +960,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 + separator_width
                                 + sep_margin
                                 + pos_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + zoom_width
+                                + sep_margin
+                                + separator_width
+                                + sep_margin
+                                + linebreak_width
                                 + sep_margin
                                 + separator_width
                                 + sep_margin,
@@ -883,6 +1071,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
                         let sep2_hwnd = GetWindowLongPtrW(hwnd, 40) as HWND;
                         let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                        let sep3_hwnd = GetWindowLongPtrW(hwnd, 56) as HWND;
+                        let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                        let sep4_hwnd = GetWindowLongPtrW(hwnd, 72) as HWND;
+                        let linebreak_hwnd = GetWindowLongPtrW(hwnd, 80) as HWND;
                         let separator_hwnd = GetWindowLongPtrW(hwnd, 16) as HWND;
 
                         if cursor_hwnd == char_hwnd
@@ -890,6 +1082,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             || cursor_hwnd == pos_hwnd
                             || cursor_hwnd == sep2_hwnd
                             || cursor_hwnd == encoding_hwnd
+                            || cursor_hwnd == sep3_hwnd
+                            || cursor_hwnd == zoom_hwnd
+                            || cursor_hwnd == sep4_hwnd
+                            || cursor_hwnd == linebreak_hwnd
                             || cursor_hwnd == separator_hwnd
                         {
                             let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
@@ -1129,6 +1325,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
                         let sep2_hwnd = GetWindowLongPtrW(hwnd, 40) as HWND;
                         let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                        let sep3_hwnd = GetWindowLongPtrW(hwnd, 56) as HWND;
+                        let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                        let sep4_hwnd = GetWindowLongPtrW(hwnd, 72) as HWND;
+                        let linebreak_hwnd = GetWindowLongPtrW(hwnd, 80) as HWND;
                         let separator_hwnd = GetWindowLongPtrW(hwnd, 16) as HWND;
 
                         // Show/hide all status bar windows completely
@@ -1138,6 +1338,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         ShowWindow(pos_hwnd, show_cmd);
                         ShowWindow(sep2_hwnd, show_cmd);
                         ShowWindow(encoding_hwnd, show_cmd);
+                        ShowWindow(sep3_hwnd, show_cmd);
+                        ShowWindow(zoom_hwnd, show_cmd);
+                        ShowWindow(sep4_hwnd, show_cmd);
+                        ShowWindow(linebreak_hwnd, show_cmd);
                         ShowWindow(separator_hwnd, show_cmd);
 
                         // Update menu check state
@@ -1184,7 +1388,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let edit_hwnd = GetWindowLongPtrW(hwnd, 0) as HWND;
                         let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
                         let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
-                        update_status_bar(edit_hwnd, char_hwnd, pos_hwnd);
+                        let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                        update_status_bar(edit_hwnd, char_hwnd, pos_hwnd, zoom_hwnd);
                     }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1224,7 +1429,7 @@ fn main() {
             style: CS_VREDRAW | CS_HREDRAW,
             lpfnWndProc: Some(window_proc),
             cbClsExtra: 0,
-            cbWndExtra: (std::mem::size_of::<isize>() * 8) as i32, // 8 pointers: EDIT, separator, char, sep1, line, sep2, col
+            cbWndExtra: (std::mem::size_of::<isize>() * 11) as i32, // 11 pointers: EDIT, separator, char, sep1, pos, sep2, encoding, sep3, zoom, sep4, linebreak
             hInstance: hinstance,
             hIcon: hicon,
             hCursor: std::ptr::null_mut(),
@@ -1403,7 +1608,8 @@ fn main() {
                 if *visible {
                     let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
                     let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
-                    status_bar::update_status_bar(edit_hwnd, char_hwnd, pos_hwnd);
+                    let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                    status_bar::update_status_bar(edit_hwnd, char_hwnd, pos_hwnd, zoom_hwnd);
                 }
             }
 

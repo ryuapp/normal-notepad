@@ -15,6 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 pub const EM_GETSEL: u32 = 0x00B0;
 pub const EM_LINEFROMCHAR: u32 = 0x00C9;
+pub const EM_GETZOOM: u32 = 0x04E0;
 pub const WM_GETTEXTLENGTH: u32 = 0x000E;
 
 // Helper function to convert raw SendMessageW result to i32
@@ -33,7 +34,7 @@ fn msg_as_usize(result: isize) -> usize {
 static COUNT_NEWLINE_AS_ONE: AtomicBool = AtomicBool::new(true);
 
 // Cache for previous status bar values
-static LAST_STATUS: Mutex<Option<(i32, i32, i32)>> = Mutex::new(None);
+static LAST_STATUS: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
 
 // Separator window procedure for thin light gray lines (vertical or horizontal)
 pub extern "system" fn separator_proc(
@@ -243,7 +244,7 @@ pub unsafe fn register_status_bar_classes() {
     }
 }
 
-pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
+pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND, zoom_hwnd: HWND) {
     unsafe {
         if edit_hwnd != HWND::default() {
             // Get cursor position using EM_GETSEL
@@ -324,8 +325,24 @@ pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
                 text_length
             };
 
+            // Get zoom level
+            let mut numerator: i32 = 0;
+            let mut denominator: i32 = 0;
+            SendMessageW(
+                edit_hwnd,
+                EM_GETZOOM,
+                &mut numerator as *mut i32 as usize,
+                &mut denominator as *mut i32 as isize,
+            );
+
+            let zoom_percent = if denominator != 0 {
+                (numerator * 100) / denominator
+            } else {
+                100 // Default 100%
+            };
+
             // Check if values changed
-            let current_status = (display_line, display_col, char_count);
+            let current_status = (display_line, display_col, char_count, zoom_percent);
             let mut last = LAST_STATUS.lock().unwrap();
 
             if *last != Some(current_status) {
@@ -352,6 +369,12 @@ pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND) {
                 let pos_utf16: Vec<u16> = pos_text.encode_utf16().collect();
                 SetWindowTextW(pos_hwnd, pos_utf16.as_ptr());
                 InvalidateRect(pos_hwnd, std::ptr::null(), 1);
+
+                // Update zoom level
+                let zoom_text = format!("{}%\0", zoom_percent);
+                let zoom_utf16: Vec<u16> = zoom_text.encode_utf16().collect();
+                SetWindowTextW(zoom_hwnd, zoom_utf16.as_ptr());
+                InvalidateRect(zoom_hwnd, std::ptr::null(), 1);
             }
         }
     }
