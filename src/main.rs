@@ -15,6 +15,7 @@ use constants::{
     IMF_DUALFONT, OLE_PLACEHOLDER, PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
 };
 use context_menu::show_context_menu;
+use file_io::FileEncoding;
 use i18n::{get_string, init_language};
 use status_bar::{EM_GETSEL, EM_LINEFROMCHAR, update_status_bar};
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ static SAVED_CONTENT: Mutex<String> = Mutex::new(String::new());
 static WORD_WRAP_ENABLED: Mutex<bool> = Mutex::new(true);
 static STATUSBAR_VISIBLE: Mutex<bool> = Mutex::new(true);
 static MENU_HANDLE: Mutex<Option<isize>> = Mutex::new(None);
+static CURRENT_ENCODING: Mutex<FileEncoding> = Mutex::new(FileEncoding::Utf8);
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateFontW, GetSysColorBrush, InvalidateRect};
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
@@ -1152,8 +1154,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         0
                     }
                     ID_FILE_OPEN => {
-                        if let Some(path) = file_io::open_file_dialog() {
-                            if let Ok(content) = file_io::load_file(&path) {
+                        if let Some((path, selected_encoding)) = file_io::open_file_dialog() {
+                            if let Ok((content, detected_encoding)) =
+                                file_io::load_file(&path, selected_encoding)
+                            {
                                 // Convert UTF-8 to UTF-16 with null terminator
                                 let utf16: Vec<u16> =
                                     content.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1164,6 +1168,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 // Store the file path
                                 if let Ok(mut current_file) = CURRENT_FILE.lock() {
                                     *current_file = Some(path.clone());
+                                }
+
+                                // Store the detected encoding (not the selected one)
+                                if let Ok(mut current_encoding) = CURRENT_ENCODING.lock() {
+                                    *current_encoding = detected_encoding;
                                 }
 
                                 // Save content for comparison
@@ -1183,6 +1192,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                         SetWindowTextW(hwnd, title_utf16.as_ptr());
                                     }
                                 }
+
+                                // Update status bar
+                                let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
+                                let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                                let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                                let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                                let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                                    *enc
+                                } else {
+                                    FileEncoding::Utf8
+                                };
+                                update_status_bar(
+                                    edit_hwnd,
+                                    char_hwnd,
+                                    pos_hwnd,
+                                    encoding_hwnd,
+                                    zoom_hwnd,
+                                    current_encoding,
+                                );
                             }
                         }
                         0
@@ -1193,8 +1221,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 // Check if this is an untitled file
                                 if is_untitled_file(path) {
                                     // For untitled files, use "Save As" dialog
+                                    let path_clone = path.clone();
                                     drop(current_file); // Release lock before showing dialog
-                                    if let Some(new_path) = file_io::save_file_dialog() {
+                                    let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock()
+                                    {
+                                        *enc
+                                    } else {
+                                        FileEncoding::Utf8
+                                    };
+                                    if let Some((new_path, encoding)) = file_io::save_file_dialog(
+                                        current_encoding,
+                                        Some(&path_clone),
+                                    ) {
                                         let text_len =
                                             SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
                                         let text = if text_len > 0 {
@@ -1211,8 +1249,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             String::new()
                                         };
 
-                                        let _ = file_io::save_file(&new_path, &text);
+                                        let _ = file_io::save_file(&new_path, &text, encoding);
                                         *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                                        // Store the encoding
+                                        if let Ok(mut current_encoding) = CURRENT_ENCODING.lock() {
+                                            *current_encoding = encoding;
+                                        }
                                         // Save content for comparison
                                         if let Ok(mut saved) = SAVED_CONTENT.lock() {
                                             *saved = text;
@@ -1228,9 +1270,34 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                                 SetWindowTextW(hwnd, title_utf16.as_ptr());
                                             }
                                         }
+                                        // Update status bar
+                                        let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
+                                        let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                                        let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                                        let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                                        let current_encoding =
+                                            if let Ok(enc) = CURRENT_ENCODING.lock() {
+                                                *enc
+                                            } else {
+                                                FileEncoding::Utf8
+                                            };
+                                        update_status_bar(
+                                            edit_hwnd,
+                                            char_hwnd,
+                                            pos_hwnd,
+                                            encoding_hwnd,
+                                            zoom_hwnd,
+                                            current_encoding,
+                                        );
                                     }
                                 } else {
-                                    // Regular save
+                                    // Regular save (use current encoding)
+                                    let encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                                        *enc
+                                    } else {
+                                        FileEncoding::Utf8
+                                    };
+
                                     let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
                                     let text = if text_len > 0 {
                                         let mut buffer: Vec<u16> = vec![0; text_len + 1];
@@ -1245,7 +1312,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                         String::new()
                                     };
 
-                                    let _ = file_io::save_file(path, &text);
+                                    let _ = file_io::save_file(path, &text, encoding);
                                     // Save content for comparison
                                     if let Ok(mut saved) = SAVED_CONTENT.lock() {
                                         *saved = text;
@@ -1268,7 +1335,19 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     }
                     ID_FILE_SAVEAS => {
                         // Show save dialog
-                        if let Some(new_path) = file_io::save_file_dialog() {
+                        let current_file_path = if let Ok(file) = CURRENT_FILE.lock() {
+                            file.clone()
+                        } else {
+                            None
+                        };
+                        let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                            *enc
+                        } else {
+                            FileEncoding::Utf8
+                        };
+                        if let Some((new_path, encoding)) =
+                            file_io::save_file_dialog(current_encoding, current_file_path.as_ref())
+                        {
                             let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
                             let text = if text_len > 0 {
                                 let mut buffer: Vec<u16> = vec![0; text_len + 1];
@@ -1283,8 +1362,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 String::new()
                             };
 
-                            let _ = file_io::save_file(&new_path, &text);
+                            let _ = file_io::save_file(&new_path, &text, encoding);
                             *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                            // Store the encoding
+                            if let Ok(mut current_encoding) = CURRENT_ENCODING.lock() {
+                                *current_encoding = encoding;
+                            }
                             // Save content for comparison
                             if let Ok(mut saved) = SAVED_CONTENT.lock() {
                                 *saved = text.clone();
@@ -1298,6 +1381,24 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     SetWindowTextW(hwnd, title_utf16.as_ptr());
                                 }
                             }
+                            // Update status bar
+                            let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
+                            let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                            let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
+                            let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
+                            let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                                *enc
+                            } else {
+                                FileEncoding::Utf8
+                            };
+                            update_status_bar(
+                                edit_hwnd,
+                                char_hwnd,
+                                pos_hwnd,
+                                encoding_hwnd,
+                                zoom_hwnd,
+                                current_encoding,
+                            );
                         }
                         0
                     }
@@ -1427,8 +1528,21 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let edit_hwnd = GetWindowLongPtrW(hwnd, 0) as HWND;
                         let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
                         let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                        let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
                         let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
-                        update_status_bar(edit_hwnd, char_hwnd, pos_hwnd, zoom_hwnd);
+                        let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                            *enc
+                        } else {
+                            FileEncoding::Utf8
+                        };
+                        update_status_bar(
+                            edit_hwnd,
+                            char_hwnd,
+                            pos_hwnd,
+                            encoding_hwnd,
+                            zoom_hwnd,
+                            current_encoding,
+                        );
                     }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1530,8 +1644,16 @@ fn main() {
                             // Check if this is an untitled file
                             if is_untitled_file(path) {
                                 // For untitled files, use "Save As" dialog
+                                let path_clone = path.clone();
                                 drop(current_file); // Release lock before showing dialog
-                                if let Some(new_path) = file_io::save_file_dialog() {
+                                let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                                    *enc
+                                } else {
+                                    FileEncoding::Utf8
+                                };
+                                if let Some((new_path, encoding)) =
+                                    file_io::save_file_dialog(current_encoding, Some(&path_clone))
+                                {
                                     let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
                                     let text = if text_len > 0 {
                                         let mut buffer: Vec<u16> = vec![0; text_len + 1];
@@ -1546,8 +1668,12 @@ fn main() {
                                         String::new()
                                     };
 
-                                    let _ = file_io::save_file(&new_path, &text);
+                                    let _ = file_io::save_file(&new_path, &text, encoding);
                                     *CURRENT_FILE.lock().unwrap() = Some(new_path.clone());
+                                    // Store the encoding
+                                    if let Ok(mut current_encoding) = CURRENT_ENCODING.lock() {
+                                        *current_encoding = encoding;
+                                    }
                                     // Save content for comparison
                                     if let Ok(mut saved) = SAVED_CONTENT.lock() {
                                         *saved = text.clone();
@@ -1565,7 +1691,7 @@ fn main() {
                                     }
                                 }
                             } else {
-                                // Regular save
+                                // Regular save (use UTF-8 by default)
                                 let text_len = SendMessageW(edit_hwnd, 0x000E, 0, 0) as usize;
                                 let text = if text_len > 0 {
                                     let mut buffer: Vec<u16> = vec![0; text_len + 1];
@@ -1580,7 +1706,7 @@ fn main() {
                                     String::new()
                                 };
 
-                                let _ = file_io::save_file(path, &text);
+                                let _ = file_io::save_file(path, &text, FileEncoding::Utf8);
                                 // Save content for comparison
                                 if let Ok(mut saved) = SAVED_CONTENT.lock() {
                                     *saved = text.clone();
@@ -1655,8 +1781,21 @@ fn main() {
                 if *visible {
                     let char_hwnd = GetWindowLongPtrW(hwnd, 8) as HWND;
                     let pos_hwnd = GetWindowLongPtrW(hwnd, 32) as HWND;
+                    let encoding_hwnd = GetWindowLongPtrW(hwnd, 48) as HWND;
                     let zoom_hwnd = GetWindowLongPtrW(hwnd, 64) as HWND;
-                    status_bar::update_status_bar(edit_hwnd, char_hwnd, pos_hwnd, zoom_hwnd);
+                    let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                        *enc
+                    } else {
+                        FileEncoding::Utf8
+                    };
+                    status_bar::update_status_bar(
+                        edit_hwnd,
+                        char_hwnd,
+                        pos_hwnd,
+                        encoding_hwnd,
+                        zoom_hwnd,
+                        current_encoding,
+                    );
                 }
             }
 

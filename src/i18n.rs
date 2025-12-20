@@ -79,6 +79,8 @@ fn get_japanese(key: &str) -> &'static str {
         "FILE_DIALOG_SAVE" => "ファイルを保存",
         "FILE_FILTER_ALL" => "すべてのファイル (*.*)",
         "FILE_FILTER_TEXT" => "テキストファイル (*.txt)",
+        "FILE_ENCODING" => "エンコード:",
+        "ENCODING_AUTO" => "自動検出",
         // Status bar
         "STATUS_LINE_COL" => "行 {line}、列 {col}",
         "STATUS_CHAR_COUNT" => "{count} 文字",
@@ -118,6 +120,8 @@ fn get_english(key: &str) -> &'static str {
         "FILE_DIALOG_SAVE" => "Save File",
         "FILE_FILTER_ALL" => "All Files (*.*)",
         "FILE_FILTER_TEXT" => "Text Files (*.txt)",
+        "FILE_ENCODING" => "Encoding:",
+        "ENCODING_AUTO" => "Auto",
         // Status bar
         "STATUS_LINE_COL" => "Ln {line}, Col {col}",
         "STATUS_CHAR_COUNT" => "{count} characters",

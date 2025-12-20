@@ -1,3 +1,4 @@
+use crate::file_io::FileEncoding;
 use crate::i18n::get_string;
 use crate::line_column::calculate_line_column;
 use std::sync::Mutex;
@@ -244,7 +245,14 @@ pub unsafe fn register_status_bar_classes() {
     }
 }
 
-pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND, zoom_hwnd: HWND) {
+pub fn update_status_bar(
+    edit_hwnd: HWND,
+    char_hwnd: HWND,
+    pos_hwnd: HWND,
+    encoding_hwnd: HWND,
+    zoom_hwnd: HWND,
+    current_encoding: FileEncoding,
+) {
     unsafe {
         if edit_hwnd != HWND::default() {
             // Get cursor position using EM_GETSEL
@@ -369,6 +377,16 @@ pub fn update_status_bar(edit_hwnd: HWND, char_hwnd: HWND, pos_hwnd: HWND, zoom_
                 let pos_utf16: Vec<u16> = pos_text.encode_utf16().collect();
                 SetWindowTextW(pos_hwnd, pos_utf16.as_ptr());
                 InvalidateRect(pos_hwnd, std::ptr::null(), 1);
+
+                // Update encoding display
+                let encoding_text = match current_encoding {
+                    FileEncoding::Utf8 => "UTF-8\0".to_string(),
+                    FileEncoding::ShiftJis => "Shift-JIS\0".to_string(),
+                    FileEncoding::Auto => format!("{}\0", get_string("ENCODING_AUTO")),
+                };
+                let encoding_utf16: Vec<u16> = encoding_text.encode_utf16().collect();
+                SetWindowTextW(encoding_hwnd, encoding_utf16.as_ptr());
+                InvalidateRect(encoding_hwnd, std::ptr::null(), 1);
 
                 // Update zoom level
                 let zoom_text = format!("{}%\0", zoom_percent);
