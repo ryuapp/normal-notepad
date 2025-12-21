@@ -1,15 +1,17 @@
 use crate::file_io::FileEncoding;
 use crate::i18n::get_string;
 use crate::line_column::calculate_line_column;
+use crate::theme::{
+    DARK_SEPARATOR, DARK_STATUSBAR_BG, DARK_STATUSBAR_TEXT, LIGHT_SEPARATOR, LIGHT_STATUSBAR_BG,
+    LIGHT_STATUSBAR_TEXT, should_use_dark_mode,
+};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, DRAW_TEXT_FORMAT, DeleteObject, DrawTextW, EndPaint,
-    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, GetSysColor,
-    GetSysColorBrush, HBRUSH, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID,
-    SYS_COLOR_INDEX, SelectObject,
+    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, HBRUSH, InvalidateRect,
+    LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -63,8 +65,12 @@ pub extern "system" fn separator_proc(
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
 
-                // Gray color (RGB: 210, 209, 208)
-                let separator_color = COLORREF(0x00D0D1D2u32);
+                // Separator color based on dark mode
+                let separator_color = if should_use_dark_mode() {
+                    DARK_SEPARATOR
+                } else {
+                    LIGHT_SEPARATOR
+                };
                 let pen = CreatePen(PS_SOLID, 1, separator_color);
                 if !pen.is_invalid() {
                     let old_pen = SelectObject(hdc, pen.into());
@@ -125,10 +131,16 @@ pub extern "system" fn status_text_proc(
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
 
-                // Fill background
-                const COLOR_BTNFACE: SYS_COLOR_INDEX = SYS_COLOR_INDEX(15);
-                let brush = GetSysColorBrush(COLOR_BTNFACE);
-                FillRect(hdc, &rect, HBRUSH(brush.0));
+                // Fill background based on dark mode
+                use windows::Win32::Graphics::Gdi::CreateSolidBrush;
+                let (bg_color, text_color) = if should_use_dark_mode() {
+                    (DARK_STATUSBAR_BG, DARK_STATUSBAR_TEXT)
+                } else {
+                    (LIGHT_STATUSBAR_BG, LIGHT_STATUSBAR_TEXT)
+                };
+                let brush = CreateSolidBrush(bg_color);
+                FillRect(hdc, &rect, brush);
+                let _ = DeleteObject(brush.into());
 
                 // Get window text
                 let text_len =
@@ -146,8 +158,7 @@ pub extern "system" fn status_text_proc(
 
                     // Set text properties
                     let _ = SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
-                    const COLOR_BTNTEXT: SYS_COLOR_INDEX = SYS_COLOR_INDEX(18);
-                    let _ = SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
+                    let _ = SetTextColor(hdc, text_color);
 
                     // Create and set small font for status bar
                     let font_name = "Segoe UI";
@@ -206,7 +217,6 @@ pub extern "system" fn status_text_proc(
 pub unsafe fn register_status_bar_classes() {
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
-        const COLOR_BTNFACE: SYS_COLOR_INDEX = SYS_COLOR_INDEX(15);
 
         // Register separator window class
         let separator_class_name = "SeparatorClass\0".encode_utf16().collect::<Vec<_>>();
@@ -218,7 +228,7 @@ pub unsafe fn register_status_bar_classes() {
             hInstance: hinstance.into(),
             hIcon: Default::default(),
             hCursor: Default::default(),
-            hbrBackground: HBRUSH(GetSysColorBrush(COLOR_BTNFACE).0),
+            hbrBackground: HBRUSH::default(), // No background brush, use WM_PAINT
             lpszMenuName: PCWSTR::null(),
             lpszClassName: PCWSTR(separator_class_name.as_ptr()),
         };
@@ -234,7 +244,7 @@ pub unsafe fn register_status_bar_classes() {
             hInstance: hinstance.into(),
             hIcon: Default::default(),
             hCursor: Default::default(),
-            hbrBackground: HBRUSH(GetSysColorBrush(COLOR_BTNFACE).0),
+            hbrBackground: HBRUSH::default(), // No background brush, use WM_PAINT
             lpszMenuName: PCWSTR::null(),
             lpszClassName: PCWSTR(status_text_class_name.as_ptr()),
         };

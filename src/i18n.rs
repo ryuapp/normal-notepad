@@ -69,6 +69,7 @@ fn get_japanese(key: &str) -> &'static str {
         "MENU_STATUSBAR" => "ステータスバー(&B)",
         "MENU_ZOOMIN" => "拡大(&I)",
         "MENU_ZOOMOUT" => "縮小(&O)",
+        "MENU_DARKMODE" => "ダークモード(&D)",
         // Context menu
         "CONTEXT_UNDO" => "元に戻す (Ctrl+Z)",
         "CONTEXT_REDO" => "やり直し (Ctrl+Y)",
@@ -117,6 +118,7 @@ fn get_english(key: &str) -> &'static str {
         "MENU_STATUSBAR" => "Status Bar(&B)",
         "MENU_ZOOMIN" => "Zoom In(&I)",
         "MENU_ZOOMOUT" => "Zoom Out(&O)",
+        "MENU_DARKMODE" => "Dark Mode(&D)",
         // Context menu
         "CONTEXT_UNDO" => "Undo (Ctrl+Z)",
         "CONTEXT_REDO" => "Redo (Ctrl+Y)",
