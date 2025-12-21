@@ -10,9 +10,10 @@ mod status_bar;
 use constants::{
     EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETLANGOPTIONS, EM_GETTEXT, EM_SETLANGOPTIONS,
     EM_SETPARAFORMAT, EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE, ICON_BIG, ICON_SMALL,
-    ID_EDIT_COPY, ID_EDIT_CUT, ID_EDIT_PASTE, ID_EDIT_SELECTALL, ID_FILE_EXIT, ID_FILE_NEW,
-    ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS, ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT,
-    IMF_DUALFONT, OLE_PLACEHOLDER, PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
+    ID_EDIT_COPY, ID_EDIT_CUT, ID_EDIT_DELETE, ID_EDIT_PASTE, ID_EDIT_REDO, ID_EDIT_SELECTALL,
+    ID_EDIT_UNDO, ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS,
+    ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT, IMF_DUALFONT, OLE_PLACEHOLDER,
+    PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
 };
 use context_menu::show_context_menu;
 use file_io::FileEncoding;
@@ -36,19 +37,22 @@ use windows::Win32::Graphics::Gdi::{
     CreateFontW, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
     GetSysColorBrush, HBRUSH, InvalidateRect, SYS_COLOR_INDEX,
 };
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
-use windows::Win32::UI::Controls::{EM_SETMARGINS, EM_SETMODIFY, EM_SETSEL};
+use windows::Win32::UI::Controls::{EM_SETMARGINS, EM_SETMODIFY};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuItem, CreateMenu, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect,
-    HMENU, IDC_ARROW, LoadCursorW, LoadIconW, MENU_ITEM_FLAGS, MSG, PostQuitMessage,
-    RegisterClassW, SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD, SendMessageW, SetCursor, SetMenu,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE,
-    WM_CUT, WM_DESTROY, WM_GETMINMAXINFO, WM_KEYDOWN, WM_NOTIFY, WM_PASTE, WM_SETCURSOR,
-    WM_SETFONT, WM_SETICON, WM_SIZE, WNDCLASS_STYLES, WNDCLASSW,
+    DispatchMessageW, EnableMenuItem, GetClientRect, GetCursorPos, GetMenu, GetMessageW,
+    GetSubMenu, GetWindowLongPtrW, GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, LoadIconW,
+    MENU_ITEM_FLAGS, MSG, PostQuitMessage, RegisterClassW, SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD,
+    SendMessageW, SetCursor, SetMenu, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+    WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CUT, WM_DESTROY, WM_GETMINMAXINFO, WM_INITMENUPOPUP,
+    WM_KEYDOWN, WM_NOTIFY, WM_PASTE, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE,
+    WNDCLASS_STYLES, WNDCLASSW,
 };
 use windows::core::PCWSTR;
 
@@ -471,13 +475,28 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Create Edit menu
                 let hmenu_edit = CreateMenu().unwrap_or_default();
-                let selectall_text = format!("{}\0", get_string("MENU_SELECTALL"));
-                let selectall_text_utf16: Vec<u16> = selectall_text.encode_utf16().collect();
+                let undo_text = format!("{}\0", get_string("MENU_UNDO"));
+                let undo_text_utf16: Vec<u16> = undo_text.encode_utf16().collect();
                 let _ = AppendMenuW(
                     hmenu_edit,
                     MENU_ITEM_FLAGS(0x00000000),
-                    ID_EDIT_SELECTALL as usize,
-                    PCWSTR(selectall_text_utf16.as_ptr()),
+                    ID_EDIT_UNDO as usize,
+                    PCWSTR(undo_text_utf16.as_ptr()),
+                );
+                let redo_text = format!("{}\0", get_string("MENU_REDO"));
+                let redo_text_utf16: Vec<u16> = redo_text.encode_utf16().collect();
+                let _ = AppendMenuW(
+                    hmenu_edit,
+                    MENU_ITEM_FLAGS(0x00000000),
+                    ID_EDIT_REDO as usize,
+                    PCWSTR(redo_text_utf16.as_ptr()),
+                );
+                // Add separator
+                let _ = AppendMenuW(
+                    hmenu_edit,
+                    MENU_ITEM_FLAGS(0x00000800), // MF_SEPARATOR
+                    0,
+                    PCWSTR::null(),
                 );
                 let cut_text = format!("{}\0", get_string("MENU_CUT"));
                 let cut_text_utf16: Vec<u16> = cut_text.encode_utf16().collect();
@@ -502,6 +521,29 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     MENU_ITEM_FLAGS(0x00000000),
                     ID_EDIT_PASTE as usize,
                     PCWSTR(paste_text_utf16.as_ptr()),
+                );
+                let delete_text = format!("{}\0", get_string("MENU_DELETE"));
+                let delete_text_utf16: Vec<u16> = delete_text.encode_utf16().collect();
+                let _ = AppendMenuW(
+                    hmenu_edit,
+                    MENU_ITEM_FLAGS(0x00000000),
+                    ID_EDIT_DELETE as usize,
+                    PCWSTR(delete_text_utf16.as_ptr()),
+                );
+                // Add separator
+                let _ = AppendMenuW(
+                    hmenu_edit,
+                    MENU_ITEM_FLAGS(0x00000800), // MF_SEPARATOR
+                    0,
+                    PCWSTR::null(),
+                );
+                let selectall_text = format!("{}\0", get_string("MENU_SELECTALL"));
+                let selectall_text_utf16: Vec<u16> = selectall_text.encode_utf16().collect();
+                let _ = AppendMenuW(
+                    hmenu_edit,
+                    MENU_ITEM_FLAGS(0x00000000),
+                    ID_EDIT_SELECTALL as usize,
+                    PCWSTR(selectall_text_utf16.as_ptr()),
                 );
                 let edit_text = format!("{}\0", get_string("MENU_EDIT"));
                 let edit_text_utf16: Vec<u16> = edit_text.encode_utf16().collect();
@@ -819,6 +861,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Reset modified flag
                 SendMessageW(edit_hwnd, EM_SETMODIFY, Some(WPARAM(0)), Some(LPARAM(0)));
+
+                // Clear undo buffer
+                const EM_EMPTYUNDOBUFFER: u32 = 0x00CD;
+                SendMessageW(
+                    edit_hwnd,
+                    EM_EMPTYUNDOBUFFER,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(0)),
+                );
 
                 LRESULT(0)
             }
@@ -1229,15 +1280,99 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_CONTEXTMENU => {
-                #[repr(C)]
-                struct POINT {
-                    x: i32,
-                    y: i32,
-                }
+                // Only show context menu if right-clicked on edit control
+                let clicked_hwnd = HWND(wparam.0 as isize as *mut core::ffi::c_void);
+                let edit_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0)) as _);
 
-                let mut pt = POINT { x: 0, y: 0 };
-                let _ = GetCursorPos(&mut pt as *mut _ as *mut _);
-                show_context_menu(hwnd, pt.x, pt.y);
+                if clicked_hwnd == edit_hwnd {
+                    #[repr(C)]
+                    struct POINT {
+                        x: i32,
+                        y: i32,
+                    }
+
+                    let mut pt = POINT { x: 0, y: 0 };
+                    let _ = GetCursorPos(&mut pt as *mut _ as *mut _);
+                    show_context_menu(hwnd, pt.x, pt.y);
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_INITMENUPOPUP => {
+                let edit_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0)) as _);
+
+                // Check if there is a selection
+                const EM_GETSEL: u32 = 0x00B0;
+                let mut start_pos: i32 = 0;
+                let mut end_pos: i32 = 0;
+                SendMessageW(
+                    edit_hwnd,
+                    EM_GETSEL,
+                    Some(WPARAM(&mut start_pos as *mut i32 as usize)),
+                    Some(LPARAM(&mut end_pos as *mut i32 as isize)),
+                );
+                let has_selection = start_pos != end_pos;
+
+                // Check if undo is available
+                const EM_CANUNDO: u32 = 0x00C6;
+                let can_undo =
+                    SendMessageW(edit_hwnd, EM_CANUNDO, Some(WPARAM(0)), Some(LPARAM(0))).0 != 0;
+
+                // Check if redo is available
+                const EM_CANREDO: u32 = 0x0455;
+                let can_redo =
+                    SendMessageW(edit_hwnd, EM_CANREDO, Some(WPARAM(0)), Some(LPARAM(0))).0 != 0;
+
+                // Check if paste is available
+                const CF_UNICODETEXT: u32 = 13;
+                let can_paste = IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok();
+
+                // Get main menu and edit submenu
+                let hmenu = GetMenu(hwnd);
+                if !hmenu.is_invalid() {
+                    let edit_menu = GetSubMenu(hmenu, 1);
+                    if !edit_menu.is_invalid() {
+                        // Enable/disable menu items based on state
+                        const MF_BYCOMMAND: u32 = 0x00000000;
+                        const MF_ENABLED: u32 = 0x00000000;
+                        const MF_GRAYED: u32 = 0x00000001;
+
+                        // Undo
+                        let undo_flags = if can_undo {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_ENABLED)
+                        } else {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_GRAYED)
+                        };
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_UNDO as u32, undo_flags);
+
+                        // Redo
+                        let redo_flags = if can_redo {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_ENABLED)
+                        } else {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_GRAYED)
+                        };
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_REDO as u32, redo_flags);
+
+                        // Cut, Copy and Delete
+                        let selection_flags = if has_selection {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_ENABLED)
+                        } else {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_GRAYED)
+                        };
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_CUT as u32, selection_flags);
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_COPY as u32, selection_flags);
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_DELETE as u32, selection_flags);
+
+                        // Paste
+                        let paste_flags = if can_paste {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_ENABLED)
+                        } else {
+                            MENU_ITEM_FLAGS(MF_BYCOMMAND | MF_GRAYED)
+                        };
+                        let _ = EnableMenuItem(edit_menu, ID_EDIT_PASTE as u32, paste_flags);
+                    }
+                }
                 LRESULT(0)
             }
             WM_COMMAND => {
@@ -1261,6 +1396,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         }
 
                         SendMessageW(edit_hwnd, EM_SETMODIFY, Some(WPARAM(0)), Some(LPARAM(0)));
+
+                        // Clear undo buffer
+                        const EM_EMPTYUNDOBUFFER: u32 = 0x00CD;
+                        SendMessageW(
+                            edit_hwnd,
+                            EM_EMPTYUNDOBUFFER,
+                            Some(WPARAM(0)),
+                            Some(LPARAM(0)),
+                        );
 
                         LRESULT(0)
                     }
@@ -1294,6 +1438,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 SendMessageW(
                                     edit_hwnd,
                                     EM_SETMODIFY,
+                                    Some(WPARAM(0)),
+                                    Some(LPARAM(0)),
+                                );
+
+                                // Clear undo buffer
+                                const EM_EMPTYUNDOBUFFER: u32 = 0x00CD;
+                                SendMessageW(
+                                    edit_hwnd,
+                                    EM_EMPTYUNDOBUFFER,
                                     Some(WPARAM(0)),
                                     Some(LPARAM(0)),
                                 );
@@ -1553,13 +1706,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         PostQuitMessage(0);
                         LRESULT(0)
                     }
-                    ID_EDIT_SELECTALL => {
-                        SendMessageW(
-                            edit_hwnd,
-                            EM_SETSEL as u32,
-                            Some(WPARAM(0)),
-                            Some(LPARAM(-1)),
-                        );
+                    ID_EDIT_UNDO => {
+                        const WM_UNDO: u32 = 0x0304;
+                        SendMessageW(edit_hwnd, WM_UNDO, Some(WPARAM(0)), Some(LPARAM(0)));
+                        LRESULT(0)
+                    }
+                    ID_EDIT_REDO => {
+                        const EM_REDO: u32 = 0x0454;
+                        SendMessageW(edit_hwnd, EM_REDO, Some(WPARAM(0)), Some(LPARAM(0)));
                         LRESULT(0)
                     }
                     ID_EDIT_CUT => {
@@ -1572,6 +1726,22 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     }
                     ID_EDIT_PASTE => {
                         SendMessageW(hwnd, WM_PASTE, Some(WPARAM(0)), Some(LPARAM(0)));
+                        LRESULT(0)
+                    }
+                    ID_EDIT_DELETE => {
+                        const EM_REPLACESEL: u32 = 0x00C2;
+                        let empty_str = "\0".encode_utf16().collect::<Vec<_>>();
+                        SendMessageW(
+                            edit_hwnd,
+                            EM_REPLACESEL,
+                            Some(WPARAM(1)), // TRUE for undo
+                            Some(LPARAM(empty_str.as_ptr() as isize)),
+                        );
+                        LRESULT(0)
+                    }
+                    ID_EDIT_SELECTALL => {
+                        const EM_SETSEL: u32 = 0x00B1;
+                        SendMessageW(edit_hwnd, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
                         LRESULT(0)
                     }
                     ID_VIEW_WORDWRAP => {
