@@ -38,7 +38,7 @@ fn msg_as_usize(result: LRESULT) -> usize {
 static COUNT_NEWLINE_AS_ONE: AtomicBool = AtomicBool::new(true);
 
 // Cache for previous status bar values
-static LAST_STATUS: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+static LAST_STATUS: Mutex<Option<(i32, i32, i32, i32, FileEncoding)>> = Mutex::new(None);
 
 // Separator window procedure for thin light gray lines (vertical or horizontal)
 pub extern "system" fn separator_proc(
@@ -347,7 +347,13 @@ pub fn update_status_bar(
             };
 
             // Check if values changed
-            let current_status = (display_line, display_col, char_count, zoom_percent);
+            let current_status = (
+                display_line,
+                display_col,
+                char_count,
+                zoom_percent,
+                current_encoding,
+            );
             let mut last = LAST_STATUS.lock().unwrap();
 
             if *last != Some(current_status) {

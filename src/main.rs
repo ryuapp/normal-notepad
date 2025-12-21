@@ -1538,18 +1538,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(48)) as _);
                             let zoom_hwnd =
                                 HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(64)) as _);
-                            let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
-                                *enc
-                            } else {
-                                FileEncoding::Utf8
-                            };
                             update_status_bar(
                                 edit_hwnd,
                                 char_hwnd,
                                 pos_hwnd,
                                 encoding_hwnd,
                                 zoom_hwnd,
-                                current_encoding,
+                                encoding,
                             );
                         }
                         LRESULT(0)
@@ -1838,6 +1833,32 @@ fn main() {
                                                 SetWindowTextW(hwnd, PCWSTR(title_utf16.as_ptr()));
                                         }
                                     }
+                                    // Update status bar
+                                    let char_hwnd = HWND(GetWindowLongPtrW(
+                                        hwnd,
+                                        WINDOW_LONG_PTR_INDEX(8),
+                                    )
+                                        as _);
+                                    let pos_hwnd = HWND(GetWindowLongPtrW(
+                                        hwnd,
+                                        WINDOW_LONG_PTR_INDEX(32),
+                                    ) as _);
+                                    let encoding_hwnd =
+                                        HWND(
+                                            GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(48)) as _
+                                        );
+                                    let zoom_hwnd =
+                                        HWND(
+                                            GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(64)) as _
+                                        );
+                                    update_status_bar(
+                                        edit_hwnd,
+                                        char_hwnd,
+                                        pos_hwnd,
+                                        encoding_hwnd,
+                                        zoom_hwnd,
+                                        encoding,
+                                    );
                                 }
                             } else {
                                 let text_len = SendMessageW(
