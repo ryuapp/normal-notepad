@@ -12,6 +12,9 @@ use windows::core::*;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileEncoding {
     Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
     ShiftJis,
     Auto,
 }
@@ -86,20 +89,25 @@ pub fn open_file_dialog() -> Option<(PathBuf, FileEncoding)> {
         {
             // Add combo box
             if customize.AddComboBox(combo_id).is_ok() {
-                // Get localized auto label
                 let auto_text = get_string("ENCODING_AUTO");
                 let auto_hstring = HSTRING::from(&auto_text);
                 let auto_label = PCWSTR(auto_hstring.as_ptr());
-
-                let utf8_label = w!("UTF-8");
 
                 let ansi_text = get_string("ENCODING_ANSI");
                 let ansi_hstring = HSTRING::from(&ansi_text);
                 let ansi_label = PCWSTR(ansi_hstring.as_ptr());
 
+                let utf16le_label = w!("UTF-16 LE");
+                let utf16be_label = w!("UTF-16 BE");
+                let utf8_label = w!("UTF-8");
+                let utf8bom_label = w!("UTF-8 (BOM)");
+
                 let _ = customize.AddControlItem(combo_id, 0, auto_label);
-                let _ = customize.AddControlItem(combo_id, 1, utf8_label);
-                let _ = customize.AddControlItem(combo_id, 2, ansi_label);
+                let _ = customize.AddControlItem(combo_id, 1, ansi_label);
+                let _ = customize.AddControlItem(combo_id, 2, utf16le_label);
+                let _ = customize.AddControlItem(combo_id, 3, utf16be_label);
+                let _ = customize.AddControlItem(combo_id, 4, utf8_label);
+                let _ = customize.AddControlItem(combo_id, 5, utf8bom_label);
                 let _ = customize.SetSelectedControlItem(combo_id, 0); // Default to Auto
             }
 
@@ -115,8 +123,11 @@ pub fn open_file_dialog() -> Option<(PathBuf, FileEncoding)> {
             // Get selected encoding from combo box
             if let Ok(selected) = customize.GetSelectedControlItem(combo_id) {
                 encoding = match selected {
-                    1 => FileEncoding::Utf8,
-                    2 => FileEncoding::ShiftJis,
+                    1 => FileEncoding::ShiftJis,
+                    2 => FileEncoding::Utf16Le,
+                    3 => FileEncoding::Utf16Be,
+                    4 => FileEncoding::Utf8,
+                    5 => FileEncoding::Utf8Bom,
                     _ => FileEncoding::Auto,
                 };
             }
@@ -218,19 +229,28 @@ pub fn save_file_dialog(
         {
             // Add combo box
             if customize.AddComboBox(combo_id).is_ok() {
-                let utf8_label = w!("UTF-8");
-
                 let ansi_text = get_string("ENCODING_ANSI");
                 let ansi_hstring = HSTRING::from(&ansi_text);
                 let ansi_label = PCWSTR(ansi_hstring.as_ptr());
 
-                let _ = customize.AddControlItem(combo_id, 0, utf8_label);
-                let _ = customize.AddControlItem(combo_id, 1, ansi_label);
+                let utf16le_label = w!("UTF-16 LE");
+                let utf16be_label = w!("UTF-16 BE");
+                let utf8_label = w!("UTF-8");
+                let utf8bom_label = w!("UTF-8 (BOM)");
+
+                let _ = customize.AddControlItem(combo_id, 0, ansi_label);
+                let _ = customize.AddControlItem(combo_id, 1, utf16le_label);
+                let _ = customize.AddControlItem(combo_id, 2, utf16be_label);
+                let _ = customize.AddControlItem(combo_id, 3, utf8_label);
+                let _ = customize.AddControlItem(combo_id, 4, utf8bom_label);
 
                 // Set default based on the provided encoding
                 let default_index = match default_encoding {
-                    FileEncoding::ShiftJis => 1,
-                    _ => 0, // UTF-8 for both Utf8 and Auto
+                    FileEncoding::ShiftJis => 0,
+                    FileEncoding::Utf16Le => 1,
+                    FileEncoding::Utf16Be => 2,
+                    FileEncoding::Utf8 | FileEncoding::Auto => 3,
+                    FileEncoding::Utf8Bom => 4,
                 };
                 let _ = customize.SetSelectedControlItem(combo_id, default_index);
             }
@@ -247,10 +267,12 @@ pub fn save_file_dialog(
             // Get selected encoding from combo box
             let combo_id = ENCODING_CONTROL_ID + 1;
             if let Ok(selected) = customize.GetSelectedControlItem(combo_id) {
-                encoding = if selected == 1 {
-                    FileEncoding::ShiftJis
-                } else {
-                    FileEncoding::Utf8
+                encoding = match selected {
+                    0 => FileEncoding::ShiftJis,
+                    1 => FileEncoding::Utf16Le,
+                    2 => FileEncoding::Utf16Be,
+                    4 => FileEncoding::Utf8Bom,
+                    _ => FileEncoding::Utf8,
                 };
             }
 
@@ -277,25 +299,43 @@ pub fn save_file(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     match encoding {
         FileEncoding::Utf8 | FileEncoding::Auto => {
-            // Auto defaults to UTF-8 for saving
             fs::write(path, content)?;
         }
-        FileEncoding::ShiftJis => {
-            // Convert UTF-16 to ANSI using Windows API (system default code page)
-            unsafe {
-                let utf16: Vec<u16> = content.encode_utf16().collect();
-                let code_page = GetACP();
-
-                // Get required buffer size
-                let size = WideCharToMultiByte(code_page, 0, &utf16, None, None, None);
-
-                if size > 0 {
-                    let mut buffer = vec![0u8; size as usize];
-                    WideCharToMultiByte(code_page, 0, &utf16, Some(&mut buffer), None, None);
-                    fs::write(path, &buffer)?;
-                }
-            }
+        FileEncoding::Utf8Bom => {
+            let mut bytes = vec![0xEF, 0xBB, 0xBF];
+            bytes.extend_from_slice(content.as_bytes());
+            fs::write(path, &bytes)?;
         }
+        FileEncoding::Utf16Le => {
+            let mut bytes = vec![0xFF, 0xFE];
+            let utf16: Vec<u16> = content.encode_utf16().collect();
+            for &word in &utf16 {
+                bytes.push((word & 0xFF) as u8);
+                bytes.push((word >> 8) as u8);
+            }
+            fs::write(path, &bytes)?;
+        }
+        FileEncoding::Utf16Be => {
+            let mut bytes = vec![0xFE, 0xFF];
+            let utf16: Vec<u16> = content.encode_utf16().collect();
+            for &word in &utf16 {
+                bytes.push((word >> 8) as u8);
+                bytes.push((word & 0xFF) as u8);
+            }
+            fs::write(path, &bytes)?;
+        }
+        FileEncoding::ShiftJis => unsafe {
+            let utf16: Vec<u16> = content.encode_utf16().collect();
+            let code_page = GetACP();
+
+            let size = WideCharToMultiByte(code_page, 0, &utf16, None, None, None);
+
+            if size > 0 {
+                let mut buffer = vec![0u8; size as usize];
+                WideCharToMultiByte(code_page, 0, &utf16, Some(&mut buffer), None, None);
+                fs::write(path, &buffer)?;
+            }
+        },
     }
     Ok(())
 }
@@ -309,13 +349,48 @@ pub fn load_file(
             let content = fs::read_to_string(path)?;
             Ok((content, FileEncoding::Utf8))
         }
+        FileEncoding::Utf8Bom => {
+            let bytes = fs::read(path)?;
+            let content = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                String::from_utf8(bytes[3..].to_vec())?
+            } else {
+                String::from_utf8(bytes)?
+            };
+            Ok((content, FileEncoding::Utf8Bom))
+        }
+        FileEncoding::Utf16Le => {
+            let bytes = fs::read(path)?;
+            let start = if bytes.starts_with(&[0xFF, 0xFE]) {
+                2
+            } else {
+                0
+            };
+            let utf16_data: Vec<u16> = bytes[start..]
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            let content = String::from_utf16_lossy(&utf16_data);
+            Ok((content, FileEncoding::Utf16Le))
+        }
+        FileEncoding::Utf16Be => {
+            let bytes = fs::read(path)?;
+            let start = if bytes.starts_with(&[0xFE, 0xFF]) {
+                2
+            } else {
+                0
+            };
+            let utf16_data: Vec<u16> = bytes[start..]
+                .chunks_exact(2)
+                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                .collect();
+            let content = String::from_utf16_lossy(&utf16_data);
+            Ok((content, FileEncoding::Utf16Be))
+        }
         FileEncoding::ShiftJis => {
-            // Convert ANSI to UTF-16 using Windows API (system default code page)
             let bytes = fs::read(path)?;
             unsafe {
                 let code_page = GetACP();
 
-                // Get required buffer size
                 let size =
                     MultiByteToWideChar(code_page, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), &bytes, None);
 
@@ -337,11 +412,30 @@ pub fn load_file(
         FileEncoding::Auto => {
             let bytes = fs::read(path)?;
 
-            // Check for BOM
+            // Check for UTF-16 LE BOM
+            if bytes.starts_with(&[0xFF, 0xFE]) {
+                let utf16_data: Vec<u16> = bytes[2..]
+                    .chunks_exact(2)
+                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                    .collect();
+                let content = String::from_utf16_lossy(&utf16_data);
+                return Ok((content, FileEncoding::Utf16Le));
+            }
+
+            // Check for UTF-16 BE BOM
+            if bytes.starts_with(&[0xFE, 0xFF]) {
+                let utf16_data: Vec<u16> = bytes[2..]
+                    .chunks_exact(2)
+                    .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                    .collect();
+                let content = String::from_utf16_lossy(&utf16_data);
+                return Ok((content, FileEncoding::Utf16Be));
+            }
+
+            // Check for UTF-8 BOM
             if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-                // UTF-8 with BOM
                 let content = String::from_utf8(bytes[3..].to_vec())?;
-                return Ok((content, FileEncoding::Utf8));
+                return Ok((content, FileEncoding::Utf8Bom));
             }
 
             // Try UTF-8 first

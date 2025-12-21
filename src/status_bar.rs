@@ -384,6 +384,9 @@ pub fn update_status_bar(
                 // Update encoding display
                 let encoding_text = match current_encoding {
                     FileEncoding::Utf8 => "UTF-8\0".to_string(),
+                    FileEncoding::Utf8Bom => "UTF-8 (BOM)\0".to_string(),
+                    FileEncoding::Utf16Le => "UTF-16 LE\0".to_string(),
+                    FileEncoding::Utf16Be => "UTF-16 BE\0".to_string(),
                     FileEncoding::ShiftJis => format!("{}\0", get_string("ENCODING_ANSI")),
                     FileEncoding::Auto => format!("{}\0", get_string("ENCODING_AUTO")),
                 };
