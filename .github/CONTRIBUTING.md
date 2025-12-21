@@ -2,7 +2,7 @@
 
 We are not currently operating with an open development model.
 
-Therefore, we do not accept Pull Requests. Instead, you can contribute by reporting bugs and other issues through our Issues section.
+Therefore, we do not accept Pull Requests. Instead, you can help us by reporting bugs and other issues through our Issues section.
 
 ## Issues
 
