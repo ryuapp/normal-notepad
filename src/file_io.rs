@@ -1,6 +1,9 @@
 use crate::i18n::get_string;
 use std::fs;
 use std::path::PathBuf;
+use windows::Win32::Globalization::{
+    GetACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar, WideCharToMultiByte,
+};
 use windows::Win32::System::Com::*;
 use windows::Win32::UI::Shell::Common::*;
 use windows::Win32::UI::Shell::*;
@@ -89,11 +92,14 @@ pub fn open_file_dialog() -> Option<(PathBuf, FileEncoding)> {
                 let auto_label = PCWSTR(auto_hstring.as_ptr());
 
                 let utf8_label = w!("UTF-8");
-                let sjis_label = w!("Shift-JIS");
+
+                let ansi_text = get_string("ENCODING_ANSI");
+                let ansi_hstring = HSTRING::from(&ansi_text);
+                let ansi_label = PCWSTR(ansi_hstring.as_ptr());
 
                 let _ = customize.AddControlItem(combo_id, 0, auto_label);
                 let _ = customize.AddControlItem(combo_id, 1, utf8_label);
-                let _ = customize.AddControlItem(combo_id, 2, sjis_label);
+                let _ = customize.AddControlItem(combo_id, 2, ansi_label);
                 let _ = customize.SetSelectedControlItem(combo_id, 0); // Default to Auto
             }
 
@@ -213,10 +219,13 @@ pub fn save_file_dialog(
             // Add combo box
             if customize.AddComboBox(combo_id).is_ok() {
                 let utf8_label = w!("UTF-8");
-                let sjis_label = w!("Shift-JIS");
+
+                let ansi_text = get_string("ENCODING_ANSI");
+                let ansi_hstring = HSTRING::from(&ansi_text);
+                let ansi_label = PCWSTR(ansi_hstring.as_ptr());
 
                 let _ = customize.AddControlItem(combo_id, 0, utf8_label);
-                let _ = customize.AddControlItem(combo_id, 1, sjis_label);
+                let _ = customize.AddControlItem(combo_id, 1, ansi_label);
 
                 // Set default based on the provided encoding
                 let default_index = match default_encoding {
@@ -272,11 +281,20 @@ pub fn save_file(
             fs::write(path, content)?;
         }
         FileEncoding::ShiftJis => {
-            // For Shift-JIS, we need to convert the string
-            // Using Windows-31J (CP932) which is the Windows variant of Shift-JIS
-            use encoding_rs::SHIFT_JIS;
-            let (encoded, _, _) = SHIFT_JIS.encode(content);
-            fs::write(path, encoded.as_ref())?;
+            // Convert UTF-16 to ANSI using Windows API (system default code page)
+            unsafe {
+                let utf16: Vec<u16> = content.encode_utf16().collect();
+                let code_page = GetACP();
+
+                // Get required buffer size
+                let size = WideCharToMultiByte(code_page, 0, &utf16, None, None, None);
+
+                if size > 0 {
+                    let mut buffer = vec![0u8; size as usize];
+                    WideCharToMultiByte(code_page, 0, &utf16, Some(&mut buffer), None, None);
+                    fs::write(path, &buffer)?;
+                }
+            }
         }
     }
     Ok(())
@@ -292,10 +310,29 @@ pub fn load_file(
             Ok((content, FileEncoding::Utf8))
         }
         FileEncoding::ShiftJis => {
-            use encoding_rs::SHIFT_JIS;
+            // Convert ANSI to UTF-16 using Windows API (system default code page)
             let bytes = fs::read(path)?;
-            let (decoded, _, _) = SHIFT_JIS.decode(&bytes);
-            Ok((decoded.into_owned(), FileEncoding::ShiftJis))
+            unsafe {
+                let code_page = GetACP();
+
+                // Get required buffer size
+                let size =
+                    MultiByteToWideChar(code_page, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), &bytes, None);
+
+                if size > 0 {
+                    let mut buffer = vec![0u16; size as usize];
+                    MultiByteToWideChar(
+                        code_page,
+                        MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0),
+                        &bytes,
+                        Some(&mut buffer),
+                    );
+                    let content = String::from_utf16_lossy(&buffer);
+                    Ok((content, FileEncoding::ShiftJis))
+                } else {
+                    Ok((String::new(), FileEncoding::ShiftJis))
+                }
+            }
         }
         FileEncoding::Auto => {
             let bytes = fs::read(path)?;
@@ -312,10 +349,27 @@ pub fn load_file(
                 return Ok((content, FileEncoding::Utf8));
             }
 
-            // Fall back to Shift-JIS
-            use encoding_rs::SHIFT_JIS;
-            let (decoded, _, _) = SHIFT_JIS.decode(&bytes);
-            Ok((decoded.into_owned(), FileEncoding::ShiftJis))
+            // Fall back to ANSI (system default code page)
+            unsafe {
+                let code_page = GetACP();
+
+                let size =
+                    MultiByteToWideChar(code_page, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), &bytes, None);
+
+                if size > 0 {
+                    let mut buffer = vec![0u16; size as usize];
+                    MultiByteToWideChar(
+                        code_page,
+                        MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0),
+                        &bytes,
+                        Some(&mut buffer),
+                    );
+                    let content = String::from_utf16_lossy(&buffer);
+                    Ok((content, FileEncoding::ShiftJis))
+                } else {
+                    Ok((String::new(), FileEncoding::ShiftJis))
+                }
+            }
         }
     }
 }

@@ -17,7 +17,6 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
 ] }
-encoding_rs = "0.8.35"
 
 [build-dependencies]
 winresource = "0.1"

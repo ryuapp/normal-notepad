@@ -378,7 +378,7 @@ pub fn update_status_bar(
                 // Update encoding display
                 let encoding_text = match current_encoding {
                     FileEncoding::Utf8 => "UTF-8\0".to_string(),
-                    FileEncoding::ShiftJis => "Shift-JIS\0".to_string(),
+                    FileEncoding::ShiftJis => format!("{}\0", get_string("ENCODING_ANSI")),
                     FileEncoding::Auto => format!("{}\0", get_string("ENCODING_AUTO")),
                 };
                 let encoding_utf16: Vec<u16> = encoding_text.encode_utf16().collect();

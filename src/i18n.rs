@@ -81,6 +81,7 @@ fn get_japanese(key: &str) -> &'static str {
         "FILE_FILTER_TEXT" => "テキストファイル (*.txt)",
         "FILE_ENCODING" => "エンコード:",
         "ENCODING_AUTO" => "自動検出",
+        "ENCODING_ANSI" => "Shift-JIS",
         // Status bar
         "STATUS_LINE_COL" => "行 {line}、列 {col}",
         "STATUS_CHAR_COUNT" => "{count} 文字",
@@ -122,6 +123,7 @@ fn get_english(key: &str) -> &'static str {
         "FILE_FILTER_TEXT" => "Text Files (*.txt)",
         "FILE_ENCODING" => "Encoding:",
         "ENCODING_AUTO" => "Auto",
+        "ENCODING_ANSI" => "ANSI",
         // Status bar
         "STATUS_LINE_COL" => "Ln {line}, Col {col}",
         "STATUS_CHAR_COUNT" => "{count} characters",
