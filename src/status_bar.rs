@@ -3,32 +3,35 @@ use crate::i18n::get_string;
 use crate::line_column::calculate_line_column;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
-use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, EndPaint, GetSysColorBrush, LineTo, MoveToEx, SelectObject,
+use windows::Win32::Foundation::COLORREF;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateFontW, CreatePen, DRAW_TEXT_FORMAT, DeleteObject, DrawTextW, EndPaint,
+    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, GetSysColor,
+    GetSysColorBrush, HBRUSH, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID,
+    SYS_COLOR_INDEX, SelectObject,
 };
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, DefWindowProcW, GetClientRect, IDC_ARROW, LoadCursorW, SendMessageW,
-    SetCursor, SetWindowTextW, WM_PAINT, WM_SETCURSOR, WNDCLASSW,
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DefWindowProcW, GetClientRect, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, SendMessageW,
+    SetCursor, SetWindowTextW, WINDOW_LONG_PTR_INDEX, WM_GETTEXT, WM_GETTEXTLENGTH, WM_PAINT,
+    WM_SETCURSOR, WNDCLASS_STYLES, WNDCLASSW,
 };
+use windows::core::PCWSTR;
 
 pub const EM_GETSEL: u32 = 0x00B0;
-pub const EM_LINEFROMCHAR: u32 = 0x00C9;
 pub const EM_GETZOOM: u32 = 0x04E0;
-pub const WM_GETTEXTLENGTH: u32 = 0x000E;
 
 // Helper function to convert raw SendMessageW result to i32
 #[inline]
-fn msg_as_i32(result: isize) -> i32 {
-    result as i32
+fn msg_as_i32(result: LRESULT) -> i32 {
+    result.0 as i32
 }
 
 // Helper function to convert raw SendMessageW result to usize
 #[inline]
-fn msg_as_usize(result: isize) -> usize {
-    result as usize
+fn msg_as_usize(result: LRESULT) -> usize {
+    result.0 as usize
 }
 
 // Count newlines as 1 character (\r\n = 1 char) or 2 characters (\r\n = 2 chars)
@@ -48,39 +51,45 @@ pub extern "system" fn separator_proc(
         match msg {
             WM_SETCURSOR => {
                 // Set cursor to default arrow when hovering over status bar
-                let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-                SetCursor(cursor);
-                1
+                if let Ok(cursor) = LoadCursorW(None, IDC_ARROW) {
+                    SetCursor(Some(cursor));
+                }
+                LRESULT(1)
             }
             WM_PAINT => {
-                let mut ps = std::mem::zeroed();
-                BeginPaint(hwnd, &mut ps);
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
 
-                let mut rect: RECT = std::mem::zeroed();
-                GetClientRect(hwnd, &mut rect);
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
 
                 // Gray color (RGB: 210, 209, 208)
-                let separator_color = 0x00D0D1D2u32;
-                let pen = CreatePen(0, 1, separator_color);
-                SelectObject(ps.hdc, pen as *mut std::ffi::c_void);
+                let separator_color = COLORREF(0x00D0D1D2u32);
+                let pen = CreatePen(PS_SOLID, 1, separator_color);
+                if !pen.is_invalid() {
+                    let old_pen = SelectObject(hdc, pen.into());
 
-                let width = rect.right - rect.left;
-                let height = rect.bottom - rect.top;
+                    let width = rect.right - rect.left;
+                    let height = rect.bottom - rect.top;
 
-                if height > width {
-                    // Vertical line - draw in the middle
-                    let x = width / 2;
-                    MoveToEx(ps.hdc, x, rect.top, std::ptr::null_mut());
-                    LineTo(ps.hdc, x, rect.bottom);
-                } else {
-                    // Horizontal line - draw in the middle
-                    let y = height / 2;
-                    MoveToEx(ps.hdc, rect.left, y, std::ptr::null_mut());
-                    LineTo(ps.hdc, rect.right, y);
+                    if height > width {
+                        // Vertical line - draw in the middle
+                        let x = width / 2;
+                        let _ = MoveToEx(hdc, x, rect.top, None);
+                        let _ = LineTo(hdc, x, rect.bottom);
+                    } else {
+                        // Horizontal line - draw in the middle
+                        let y = height / 2;
+                        let _ = MoveToEx(hdc, rect.left, y, None);
+                        let _ = LineTo(hdc, rect.right, y);
+                    }
+
+                    SelectObject(hdc, old_pen);
+                    let _ = DeleteObject(pen.into());
                 }
 
-                EndPaint(hwnd, &ps);
-                0
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
@@ -98,107 +107,95 @@ pub extern "system" fn status_text_proc(
         match msg {
             WM_SETCURSOR => {
                 // Set cursor to default arrow
-                let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-                SetCursor(cursor);
-                1
+                if let Ok(cursor) = LoadCursorW(None, IDC_ARROW) {
+                    SetCursor(Some(cursor));
+                }
+                LRESULT(1)
             }
             WM_PAINT => {
                 // Paint text using STATIC control behavior
-                use windows_sys::Win32::Graphics::Gdi::{
-                    BeginPaint, DrawTextW, EndPaint, FillRect, SetBkMode, SetTextColor, TRANSPARENT,
+                use windows::Win32::Graphics::Gdi::{
+                    BACKGROUND_MODE, FillRect, SetBkMode, SetTextColor,
                 };
-                use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
+                const GWL_STYLE: WINDOW_LONG_PTR_INDEX = WINDOW_LONG_PTR_INDEX(-16);
 
-                const DT_LEFT: u32 = 0x00000000;
-                const DT_RIGHT: u32 = 0x00000002;
-                const DT_SINGLELINE: u32 = 0x00000020;
-                const DT_VCENTER: u32 = 0x00000004;
-                const GWL_STYLE: i32 = -16;
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
 
-                let mut ps = std::mem::zeroed();
-                BeginPaint(hwnd, &mut ps);
-
-                let mut rect: RECT = std::mem::zeroed();
-                GetClientRect(hwnd, &mut rect);
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
 
                 // Fill background
-                const COLOR_BTNFACE: i32 = 15;
+                const COLOR_BTNFACE: SYS_COLOR_INDEX = SYS_COLOR_INDEX(15);
                 let brush = GetSysColorBrush(COLOR_BTNFACE);
-                FillRect(ps.hdc, &rect, brush);
+                FillRect(hdc, &rect, HBRUSH(brush.0));
 
                 // Get window text
-                const WM_GETTEXT: u32 = 0x000D;
-                const WM_GETTEXTLENGTH: u32 = 0x000E;
-                let text_len = windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
-                    hwnd,
-                    WM_GETTEXTLENGTH,
-                    0,
-                    0,
-                ) as usize;
+                let text_len =
+                    SendMessageW(hwnd, WM_GETTEXTLENGTH, Some(WPARAM(0)), Some(LPARAM(0))).0
+                        as usize;
 
                 if text_len > 0 {
                     let mut buffer = vec![0u16; text_len + 1];
-                    windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    SendMessageW(
                         hwnd,
                         WM_GETTEXT,
-                        buffer.len(),
-                        buffer.as_mut_ptr() as isize,
+                        Some(WPARAM(buffer.len())),
+                        Some(LPARAM(buffer.as_mut_ptr() as isize)),
                     );
 
                     // Set text properties
-                    SetBkMode(ps.hdc, TRANSPARENT as i32);
-                    const COLOR_BTNTEXT: i32 = 18;
-                    SetTextColor(
-                        ps.hdc,
-                        windows_sys::Win32::Graphics::Gdi::GetSysColor(COLOR_BTNTEXT),
-                    );
+                    let _ = SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
+                    const COLOR_BTNTEXT: SYS_COLOR_INDEX = SYS_COLOR_INDEX(18);
+                    let _ = SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
 
                     // Create and set small font for status bar
-                    use windows_sys::Win32::Graphics::Gdi::{CreateFontW, DeleteObject, FW_NORMAL};
-                    const DEFAULT_CHARSET: u32 = 1;
-                    const OUT_DEFAULT_PRECIS: u32 = 0;
-                    const CLIP_DEFAULT_PRECIS: u32 = 0;
-                    const DEFAULT_QUALITY: u32 = 0;
-                    const DEFAULT_PITCH: u32 = 0;
-                    const FF_DONTCARE: u32 = 0;
-
-                    let font_name = "Segoe UI\0".encode_utf16().collect::<Vec<_>>();
+                    let font_name = "Segoe UI";
                     let font = CreateFontW(
-                        -12, // Height (negative = point size)
-                        0,   // Width
-                        0,   // Escapement
-                        0,   // Orientation
-                        FW_NORMAL as i32,
-                        0, // Italic
-                        0, // Underline
-                        0, // StrikeOut
-                        DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS,
-                        CLIP_DEFAULT_PRECIS,
-                        DEFAULT_QUALITY,
-                        (DEFAULT_PITCH | FF_DONTCARE) << 8,
-                        font_name.as_ptr(),
+                        -12,                      // cHeight
+                        0,                        // cWidth
+                        0,                        // cEscapement
+                        0,                        // cOrientation
+                        400,                      // cWeight (FW_NORMAL)
+                        0,                        // bItalic
+                        0,                        // bUnderline
+                        0,                        // bStrikeOut
+                        FONT_CHARSET(1),          // iCharSet (DEFAULT_CHARSET)
+                        FONT_OUTPUT_PRECISION(0), // iOutPrecision
+                        FONT_CLIP_PRECISION(0),   // iClipPrecision
+                        FONT_QUALITY(0),          // iQuality
+                        0,                        // iPitchAndFamily
+                        windows::core::PCWSTR(
+                            font_name
+                                .encode_utf16()
+                                .chain(Some(0))
+                                .collect::<Vec<_>>()
+                                .as_ptr(),
+                        ),
                     );
-                    let old_font = SelectObject(ps.hdc, font as *mut std::ffi::c_void);
+                    if !font.is_invalid() {
+                        let old_font = SelectObject(hdc, font.into());
 
-                    // Check style for alignment
-                    const SS_RIGHT: isize = 0x0002;
-                    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-                    let format = if (style & SS_RIGHT) != 0 {
-                        DT_RIGHT | DT_SINGLELINE | DT_VCENTER
-                    } else {
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER
-                    };
+                        // Check style for alignment
+                        const SS_RIGHT: isize = 0x0002;
+                        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                        let format = if (style & SS_RIGHT) != 0 {
+                            DRAW_TEXT_FORMAT(0x00000002 | 0x00000020 | 0x00000004) // DT_RIGHT | DT_SINGLELINE | DT_VCENTER
+                        } else {
+                            DRAW_TEXT_FORMAT(0x00000000 | 0x00000020 | 0x00000004) // DT_LEFT | DT_SINGLELINE | DT_VCENTER
+                        };
 
-                    DrawTextW(ps.hdc, buffer.as_ptr(), text_len as i32, &mut rect, format);
+                        let mut text_buffer = buffer[..text_len].to_vec();
+                        let _ = DrawTextW(hdc, &mut text_buffer, &mut rect, format);
 
-                    // Restore old font and delete created font
-                    SelectObject(ps.hdc, old_font);
-                    DeleteObject(font);
+                        // Restore old font and delete created font
+                        SelectObject(hdc, old_font);
+                        let _ = DeleteObject(font.into());
+                    }
                 }
 
-                EndPaint(hwnd, &ps);
-                0
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
@@ -208,40 +205,40 @@ pub extern "system" fn status_text_proc(
 // Register status bar window classes
 pub unsafe fn register_status_bar_classes() {
     unsafe {
-        let hinstance = GetModuleHandleW(std::ptr::null());
-        const COLOR_BTNFACE: i32 = 15;
+        let hinstance = GetModuleHandleW(None).unwrap_or_default();
+        const COLOR_BTNFACE: SYS_COLOR_INDEX = SYS_COLOR_INDEX(15);
 
         // Register separator window class
         let separator_class_name = "SeparatorClass\0".encode_utf16().collect::<Vec<_>>();
         let separator_class = WNDCLASSW {
-            style: CS_VREDRAW | CS_HREDRAW,
+            style: WNDCLASS_STYLES(0x0001 | 0x0002), // CS_HREDRAW | CS_VREDRAW
             lpfnWndProc: Some(separator_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: hinstance,
-            hIcon: std::ptr::null_mut(),
-            hCursor: std::ptr::null_mut(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            lpszMenuName: std::ptr::null(),
-            lpszClassName: separator_class_name.as_ptr(),
+            hInstance: hinstance.into(),
+            hIcon: Default::default(),
+            hCursor: Default::default(),
+            hbrBackground: HBRUSH(GetSysColorBrush(COLOR_BTNFACE).0),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: PCWSTR(separator_class_name.as_ptr()),
         };
-        windows_sys::Win32::UI::WindowsAndMessaging::RegisterClassW(&separator_class);
+        let _ = windows::Win32::UI::WindowsAndMessaging::RegisterClassW(&separator_class);
 
         // Register status text window class
         let status_text_class_name = "StatusTextClass\0".encode_utf16().collect::<Vec<_>>();
         let status_text_class = WNDCLASSW {
-            style: CS_VREDRAW | CS_HREDRAW,
+            style: WNDCLASS_STYLES(0x0001 | 0x0002), // CS_HREDRAW | CS_VREDRAW
             lpfnWndProc: Some(status_text_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: hinstance,
-            hIcon: std::ptr::null_mut(),
-            hCursor: std::ptr::null_mut(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            lpszMenuName: std::ptr::null(),
-            lpszClassName: status_text_class_name.as_ptr(),
+            hInstance: hinstance.into(),
+            hIcon: Default::default(),
+            hCursor: Default::default(),
+            hbrBackground: HBRUSH(GetSysColorBrush(COLOR_BTNFACE).0),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: PCWSTR(status_text_class_name.as_ptr()),
         };
-        windows_sys::Win32::UI::WindowsAndMessaging::RegisterClassW(&status_text_class);
+        let _ = windows::Win32::UI::WindowsAndMessaging::RegisterClassW(&status_text_class);
     }
 }
 
@@ -256,28 +253,31 @@ pub fn update_status_bar(
     unsafe {
         if edit_hwnd != HWND::default() {
             // Get cursor position using EM_GETSEL
-            // EM_GETSEL expects wparam=pointer to start, lparam=pointer to end
             let mut start_pos: i32 = 0;
             let mut end_pos: i32 = 0;
             SendMessageW(
                 edit_hwnd,
                 EM_GETSEL,
-                &mut start_pos as *mut i32 as usize,
-                &mut end_pos as *mut i32 as isize,
+                Some(WPARAM(&mut start_pos as *mut i32 as usize)),
+                Some(LPARAM(&mut end_pos as *mut i32 as isize)),
             );
 
-            // Get text by selecting all and using EM_GETSEL with a custom range
-            // First, get text length
-            let text_length = msg_as_i32(SendMessageW(edit_hwnd, WM_GETTEXTLENGTH, 0, 0));
+            // Get text length
+            let text_length = msg_as_i32(SendMessageW(
+                edit_hwnd,
+                WM_GETTEXTLENGTH,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            ));
 
             let text_str = if text_length > 0 {
-                // Allocate buffer and get text using WM_GETTEXT (0x000D)
+                // Allocate buffer and get text using WM_GETTEXT
                 let mut buffer = vec![0u16; (text_length + 1) as usize];
                 let actual_len = msg_as_usize(SendMessageW(
                     edit_hwnd,
-                    0x000D,
-                    (text_length + 1) as usize,
-                    buffer.as_mut_ptr() as isize,
+                    WM_GETTEXT,
+                    Some(WPARAM((text_length + 1) as usize)),
+                    Some(LPARAM(buffer.as_mut_ptr() as isize)),
                 ));
 
                 if actual_len > 0 {
@@ -290,7 +290,7 @@ pub fn update_status_bar(
                 String::new()
             };
 
-            // Convert char position (Windows treats \r\n as 1 char) to UTF-16 code unit position
+            // Convert char position to UTF-16 code unit position
             let mut utf16_pos = 0i32;
             let mut char_idx = 0i32;
             let mut chars_iter = text_str.chars().peekable();
@@ -301,9 +301,8 @@ pub fn update_status_bar(
                 }
 
                 if ch == '\r' && chars_iter.peek() == Some(&'\n') {
-                    // \r\n counts as 1 character in Windows
-                    chars_iter.next(); // consume the \n
-                    utf16_pos += 2; // but occupies 2 UTF-16 code units
+                    chars_iter.next();
+                    utf16_pos += 2;
                 } else {
                     utf16_pos += if ch > '\u{FFFF}' { 2 } else { 1 };
                 }
@@ -311,17 +310,16 @@ pub fn update_status_bar(
                 char_idx += 1;
             }
 
-            // Calculate line and column using the dedicated function
+            // Calculate line and column
             let (display_line, display_col) = calculate_line_column(&text_str, utf16_pos);
 
             // Get total character count
             let char_count = if COUNT_NEWLINE_AS_ONE.load(Ordering::SeqCst) {
-                // Count characters, treating \r\n as 1 character
                 let mut count = 0i32;
                 let mut chars = text_str.chars().peekable();
                 while let Some(ch) = chars.next() {
                     if ch == '\r' && chars.peek() == Some(&'\n') {
-                        chars.next(); // Skip the \n
+                        chars.next();
                         count += 1;
                     } else if ch != '\0' {
                         count += 1;
@@ -329,7 +327,6 @@ pub fn update_status_bar(
                 }
                 count
             } else {
-                // Count \r\n as 2 characters
                 text_length
             };
 
@@ -339,14 +336,14 @@ pub fn update_status_bar(
             SendMessageW(
                 edit_hwnd,
                 EM_GETZOOM,
-                &mut numerator as *mut i32 as usize,
-                &mut denominator as *mut i32 as isize,
+                Some(WPARAM(&mut numerator as *mut i32 as usize)),
+                Some(LPARAM(&mut denominator as *mut i32 as isize)),
             );
 
             let zoom_percent = if denominator != 0 {
                 (numerator * 100) / denominator
             } else {
-                100 // Default 100%
+                100
             };
 
             // Check if values changed
@@ -363,10 +360,10 @@ pub fn update_status_bar(
                     char_format.replace("{count}", &char_count.to_string())
                 );
                 let char_utf16: Vec<u16> = char_text.encode_utf16().collect();
-                SetWindowTextW(char_hwnd, char_utf16.as_ptr());
-                InvalidateRect(char_hwnd, std::ptr::null(), 1);
+                let _ = SetWindowTextW(char_hwnd, PCWSTR(char_utf16.as_ptr()));
+                let _ = InvalidateRect(Some(char_hwnd), None, true);
 
-                // Update line and column in same section
+                // Update line and column
                 let pos_format = get_string("STATUS_LINE_COL");
                 let pos_text = format!(
                     "{}\0",
@@ -375,8 +372,8 @@ pub fn update_status_bar(
                         .replace("{col}", &display_col.to_string())
                 );
                 let pos_utf16: Vec<u16> = pos_text.encode_utf16().collect();
-                SetWindowTextW(pos_hwnd, pos_utf16.as_ptr());
-                InvalidateRect(pos_hwnd, std::ptr::null(), 1);
+                let _ = SetWindowTextW(pos_hwnd, PCWSTR(pos_utf16.as_ptr()));
+                let _ = InvalidateRect(Some(pos_hwnd), None, true);
 
                 // Update encoding display
                 let encoding_text = match current_encoding {
@@ -385,14 +382,14 @@ pub fn update_status_bar(
                     FileEncoding::Auto => format!("{}\0", get_string("ENCODING_AUTO")),
                 };
                 let encoding_utf16: Vec<u16> = encoding_text.encode_utf16().collect();
-                SetWindowTextW(encoding_hwnd, encoding_utf16.as_ptr());
-                InvalidateRect(encoding_hwnd, std::ptr::null(), 1);
+                let _ = SetWindowTextW(encoding_hwnd, PCWSTR(encoding_utf16.as_ptr()));
+                let _ = InvalidateRect(Some(encoding_hwnd), None, true);
 
                 // Update zoom level
                 let zoom_text = format!("{}%\0", zoom_percent);
                 let zoom_utf16: Vec<u16> = zoom_text.encode_utf16().collect();
-                SetWindowTextW(zoom_hwnd, zoom_utf16.as_ptr());
-                InvalidateRect(zoom_hwnd, std::ptr::null(), 1);
+                let _ = SetWindowTextW(zoom_hwnd, PCWSTR(zoom_utf16.as_ptr()));
+                let _ = InvalidateRect(Some(zoom_hwnd), None, true);
             }
         }
     }

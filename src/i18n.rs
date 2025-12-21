@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+use windows::Win32::Globalization::GetUserDefaultUILanguage;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Language {
