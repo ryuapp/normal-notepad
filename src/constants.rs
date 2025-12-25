@@ -41,3 +41,4 @@ pub const ID_VIEW_WORDWRAP: i32 = 11;
 pub const ID_VIEW_STATUSBAR: i32 = 12;
 pub const ID_EDIT_SELECTALL: i32 = 13;
 pub const ID_EDIT_DELETE: i32 = 14;
+pub const ID_VIEW_DARKMODE: i32 = 15;

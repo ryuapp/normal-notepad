@@ -6,14 +6,15 @@ mod file_io;
 mod i18n;
 mod line_column;
 mod status_bar;
+mod theme;
 
 use constants::{
     EC_TOPMARGIN, EM_EXLIMITTEXT, EM_GETLANGOPTIONS, EM_GETTEXT, EM_SETLANGOPTIONS,
     EM_SETPARAFORMAT, EM_SETTARGETDEVICE, EM_SETTEXT, ES_MULTILINE, ICON_BIG, ICON_SMALL,
     ID_EDIT_COPY, ID_EDIT_CUT, ID_EDIT_DELETE, ID_EDIT_PASTE, ID_EDIT_REDO, ID_EDIT_SELECTALL,
     ID_EDIT_UNDO, ID_FILE_EXIT, ID_FILE_NEW, ID_FILE_OPEN, ID_FILE_SAVE, ID_FILE_SAVEAS,
-    ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT, IMF_DUALFONT, OLE_PLACEHOLDER,
-    PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
+    ID_VIEW_DARKMODE, ID_VIEW_STATUSBAR, ID_VIEW_WORDWRAP, IMF_AUTOFONT, IMF_DUALFONT,
+    OLE_PLACEHOLDER, PFM_LINESPACING, PFM_SPACEAFTER, PFM_SPACEBEFORE,
 };
 use context_menu::show_context_menu;
 use file_io::FileEncoding;
@@ -21,6 +22,12 @@ use i18n::{get_string, init_language};
 use status_bar::update_status_bar;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use theme::{
+    allow_dark_mode_for_window, flush_menu_themes, set_preferred_app_mode, set_window_theme,
+    should_use_dark_mode, DARK_EDITOR_BG, DARK_EDITOR_TEXT, DARK_MENU_BG, DARK_MENU_BORDER,
+    DARK_MENU_HOVER, DARK_MENU_TEXT, DARK_MENU_TEXT_DISABLED, DARK_MODE_ENABLED,
+    LIGHT_EDITOR_TEXT, LIGHT_MENU_BG,
+};
 
 // Global variables for file state
 static CURRENT_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -30,12 +37,15 @@ static WORD_WRAP_ENABLED: Mutex<bool> = Mutex::new(true);
 static STATUSBAR_VISIBLE: Mutex<bool> = Mutex::new(true);
 static MENU_HANDLE: Mutex<Option<isize>> = Mutex::new(None);
 static CURRENT_ENCODING: Mutex<FileEncoding> = Mutex::new(FileEncoding::Utf8);
+static DARK_BRUSH: Mutex<Option<isize>> = Mutex::new(None);
 
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
-    GetSysColorBrush, HBRUSH, InvalidateRect, SYS_COLOR_INDEX,
+    CreateFontW, CreateSolidBrush, DeleteObject, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, FillRect, HBRUSH, InvalidateRect, SetBkColor,
+    SetTextColor,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -116,6 +126,47 @@ fn update_title_if_needed(hwnd: HWND, edit_hwnd: HWND) {
                 }
             }
         }
+    }
+}
+
+// Draw the annoying 1-pixel white line below menu bar (Unity method)
+unsafe fn draw_menu_nc_bottom_line(hwnd: HWND) {
+    if !should_use_dark_mode() {
+        return;
+    }
+
+    use windows::Win32::Graphics::Gdi::{GetWindowDC, ReleaseDC};
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SYSTEM_METRICS_INDEX};
+
+    unsafe {
+        // Get window rect
+        let mut rc_window = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rc_window);
+        let window_width = rc_window.right - rc_window.left;
+
+        // Get system metrics for caption height and menu height
+        let caption_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(4)); // SM_CYCAPTION
+        let menu_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(15)); // SM_CYMENU
+        let border_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(8)); // SM_CYFRAME
+
+        // Calculate the Y position of the line (just below menu bar)
+        // Add extra offset to cover the white line
+        let line_y = caption_height + border_height + menu_height + 2;
+
+        // Create rect for the line
+        let rc_line = RECT {
+            left: 0,
+            top: line_y,
+            right: window_width,
+            bottom: line_y + 3,
+        };
+
+        // Draw using window DC
+        let hdc = GetWindowDC(Some(hwnd));
+        let brush = CreateSolidBrush(DARK_MENU_BORDER);
+        FillRect(hdc, &rc_line, brush);
+        let _ = DeleteObject(brush.into());
+        let _ = ReleaseDC(Some(hwnd), hdc);
     }
 }
 
@@ -246,6 +297,134 @@ fn update_statusbar_menu_check() {
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
+        // Handle UAH (Undocumented Appbar Helper) messages for dark menu
+        const WM_UAHDRAWMENU: u32 = 0x0091;
+        const WM_UAHDRAWMENUITEM: u32 = 0x0092;
+
+        match msg {
+            WM_UAHDRAWMENU => {
+                // Only handle if dark mode is enabled
+                if !should_use_dark_mode() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+
+                // Draw dark menu bar background
+                #[repr(C)]
+                struct UAHMENU {
+                    hmenu: HMENU,
+                    hdc: windows::Win32::Graphics::Gdi::HDC,
+                    dwflags: u32,
+                }
+
+                let menu_data = lparam.0 as *const UAHMENU;
+                if !menu_data.is_null() {
+                    let brush = CreateSolidBrush(DARK_MENU_BG);
+                    let mut rect = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rect);
+                    rect.bottom = rect.top + 24; // Menu bar height
+                    rect.right = rect.right - rect.left;
+                    rect.left = 0;
+                    rect.top = 0;
+                    FillRect((*menu_data).hdc, &rect, brush);
+                    let _ = DeleteObject(brush.into());
+                }
+                return LRESULT(0);
+            }
+            WM_UAHDRAWMENUITEM => {
+                // Only handle if dark mode is enabled
+                if !should_use_dark_mode() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                // Draw individual menu items with white text
+                #[repr(C)]
+                struct UAHMENU {
+                    hmenu: HMENU,
+                    hdc: windows::Win32::Graphics::Gdi::HDC,
+                    dwflags: u32,
+                }
+
+                #[repr(C)]
+                struct UAHMENUITEM {
+                    iposition: i32,
+                    umwidth: i32,
+                    umheight: i32,
+                }
+
+                #[repr(C)]
+                struct UAHDRAWMENUITEM {
+                    dis: windows::Win32::UI::Controls::DRAWITEMSTRUCT,
+                    um: UAHMENU,
+                    umi: UAHMENUITEM,
+                }
+
+                let pudmi = lparam.0 as *const UAHDRAWMENUITEM;
+                if !pudmi.is_null() {
+                    let dis = &(*pudmi).dis;
+                    let um = &(*pudmi).um;
+                    let umi = &(*pudmi).umi;
+
+                    // Determine colors based on state
+                    const ODS_HOTLIGHT: u32 = 0x0040;
+                    const ODS_SELECTED: u32 = 0x0001;
+                    const ODS_INACTIVE: u32 = 0x0080;
+
+                    let bg_color = if (dis.itemState.0 & ODS_HOTLIGHT) != 0
+                        || (dis.itemState.0 & ODS_SELECTED) != 0
+                    {
+                        DARK_MENU_HOVER
+                    } else {
+                        DARK_MENU_BG
+                    };
+
+                    let text_color = if (dis.itemState.0 & ODS_INACTIVE) != 0 {
+                        DARK_MENU_TEXT_DISABLED
+                    } else {
+                        DARK_MENU_TEXT
+                    };
+
+                    // Draw background
+                    let brush = CreateSolidBrush(bg_color);
+                    FillRect(um.hdc, &dis.rcItem, brush);
+                    let _ = DeleteObject(brush.into());
+
+                    // Get menu item text
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        GetMenuItemInfoW, MENUITEMINFOW, MIIM_STRING,
+                    };
+
+                    let mut menu_string: [u16; 256] = [0; 256];
+                    let mut mii = MENUITEMINFOW {
+                        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                        fMask: MIIM_STRING,
+                        dwTypeData: windows::core::PWSTR(menu_string.as_mut_ptr()),
+                        cch: 255,
+                        ..Default::default()
+                    };
+
+                    if GetMenuItemInfoW(um.hmenu, umi.iposition as u32, true, &mut mii).is_ok() {
+                        // Draw text
+                        use windows::Win32::Graphics::Gdi::{
+                            DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, SetBkMode,
+                            SetTextColor, TRANSPARENT,
+                        };
+
+                        SetBkMode(um.hdc, TRANSPARENT);
+                        SetTextColor(um.hdc, text_color);
+
+                        let mut rect = dis.rcItem;
+                        DrawTextW(
+                            um.hdc,
+                            &mut menu_string[..mii.cch as usize],
+                            &mut rect as *mut _,
+                            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                        );
+                    }
+                }
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+
         match msg {
             WM_CREATE => {
                 let hinstance = GetModuleHandleW(None).unwrap_or_default();
@@ -274,6 +453,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Store the RichEdit control handle
                 SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0), edit_hwnd.0 as isize);
+
+                // Set dark mode scrollbar
+                set_window_theme(edit_hwnd, should_use_dark_mode());
 
                 // Set unlimited text size
                 SendMessageW(
@@ -572,6 +754,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     ID_VIEW_STATUSBAR as usize,
                     PCWSTR(statusbar_text_utf16.as_ptr()),
                 );
+                let darkmode_text = format!("{}\0", get_string("MENU_DARKMODE"));
+                let darkmode_text_utf16: Vec<u16> = darkmode_text.encode_utf16().collect();
+                let _ = AppendMenuW(
+                    hmenu_view,
+                    MENU_ITEM_FLAGS(0x00000000),
+                    ID_VIEW_DARKMODE as usize,
+                    PCWSTR(darkmode_text_utf16.as_ptr()),
+                );
+
                 let view_text = format!("{}\0", get_string("MENU_VIEW"));
                 let view_text_utf16: Vec<u16> = view_text.encode_utf16().collect();
                 let _ = AppendMenuW(
@@ -583,6 +774,37 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Set menu
                 let _ = SetMenu(hwnd, Some(hmenu));
+
+                // Apply dark mode based on preference
+                if should_use_dark_mode() {
+                    // Enable dark mode for title bar
+                    let use_dark_mode: i32 = 1; // TRUE
+                    let _ = DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &use_dark_mode as *const _ as *const _,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+
+                    // Enable dark mode for menus
+                    set_preferred_app_mode(1);
+                    allow_dark_mode_for_window(hwnd, true);
+                    flush_menu_themes();
+                } else {
+                    // Disable dark mode for title bar
+                    let use_dark_mode: i32 = 0; // FALSE
+                    let _ = DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &use_dark_mode as *const _ as *const _,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+
+                    // Disable dark mode for menus
+                    set_preferred_app_mode(0);
+                    allow_dark_mode_for_window(hwnd, false);
+                    flush_menu_themes();
+                }
 
                 // Store menu handle
                 if let Ok(mut menu_handle) = MENU_HANDLE.lock() {
@@ -871,6 +1093,83 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     Some(LPARAM(0)),
                 );
 
+                // Set colors for RichEdit based on dark mode preference
+                const EM_SETBKGNDCOLOR: u32 = 0x0443; // WM_USER + 67
+                const EM_SETCHARFORMAT: u32 = 0x0444; // WM_USER + 68
+                const SCF_ALL: usize = 0x0004;
+                const CFM_COLOR: u32 = 0x40000000;
+
+                #[repr(C)]
+                #[allow(non_snake_case)]
+                struct CHARFORMAT2W {
+                    cbsize: u32,
+                    dwmask: u32,
+                    dweffects: u32,
+                    yheight: i32,
+                    yoffset: i32,
+                    crtext: windows::Win32::Foundation::COLORREF,
+                    bcharset: u8,
+                    bpitchandfamily: u8,
+                    szfacename: [u16; 32],
+                    wweight: u16,
+                    sSpacing: i16,
+                    crbackcolor: windows::Win32::Foundation::COLORREF,
+                    lcid: u32,
+                    dwcookie: u32,
+                    sstyle: i16,
+                    wkerning: u16,
+                    bunits: u8,
+                    bAnimation: u8,
+                    bRevAuthor: u8,
+                    bUnderlineType: u8,
+                }
+
+                if should_use_dark_mode() {
+                    // Dark mode colors
+                    SendMessageW(
+                        edit_hwnd,
+                        EM_SETBKGNDCOLOR,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(DARK_EDITOR_BG.0 as isize)),
+                    );
+
+                    let mut cf = CHARFORMAT2W {
+                        cbsize: std::mem::size_of::<CHARFORMAT2W>() as u32,
+                        dwmask: CFM_COLOR,
+                        crtext: DARK_EDITOR_TEXT,
+                        ..std::mem::zeroed()
+                    };
+
+                    SendMessageW(
+                        edit_hwnd,
+                        EM_SETCHARFORMAT,
+                        Some(WPARAM(SCF_ALL)),
+                        Some(LPARAM(&mut cf as *mut _ as isize)),
+                    );
+                } else {
+                    // Light mode colors (system defaults)
+                    SendMessageW(
+                        edit_hwnd,
+                        EM_SETBKGNDCOLOR,
+                        Some(WPARAM(1)), // Use system color
+                        Some(LPARAM(0)),
+                    );
+
+                    let mut cf = CHARFORMAT2W {
+                        cbsize: std::mem::size_of::<CHARFORMAT2W>() as u32,
+                        dwmask: CFM_COLOR,
+                        crtext: LIGHT_EDITOR_TEXT,
+                        ..std::mem::zeroed()
+                    };
+
+                    SendMessageW(
+                        edit_hwnd,
+                        EM_SETCHARFORMAT,
+                        Some(WPARAM(SCF_ALL)),
+                        Some(LPARAM(&mut cf as *mut _ as isize)),
+                    );
+                }
+
                 LRESULT(0)
             }
             WM_GETMINMAXINFO => {
@@ -1150,6 +1449,63 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             SET_WINDOW_POS_FLAGS(0x0004),
                         );
                     }
+
+                    // Redraw edit control and entire window when resized
+                    let _ = InvalidateRect(Some(edit_hwnd), None, true);
+                    let _ = InvalidateRect(Some(hwnd), None, true);
+
+                    // Directly paint menu bar area after resize using window DC
+                    if should_use_dark_mode() {
+                        if wparam.0 != 1 {
+                            // Skip SIZE_MINIMIZED (1)
+                            use windows::Win32::Graphics::Gdi::{GetWindowDC, ReleaseDC};
+                            use windows::Win32::UI::WindowsAndMessaging::{
+                                GetSystemMetrics, SYSTEM_METRICS_INDEX,
+                            };
+
+                            let hdc = GetWindowDC(Some(hwnd));
+                            let caption_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(4)); // SM_CYCAPTION
+                            let menu_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(15)); // SM_CYMENU
+                            let border_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(8)); // SM_CYFRAME
+
+                            let mut window_rect = RECT::default();
+                            let _ = GetWindowRect(hwnd, &mut window_rect);
+                            let window_width = window_rect.right - window_rect.left;
+
+                            let menu_rect = RECT {
+                                left: 0,
+                                top: caption_height + border_height,
+                                right: window_width,
+                                bottom: caption_height + border_height + menu_height + 10,
+                            };
+
+                            let brush = CreateSolidBrush(DARK_MENU_BG);
+                            FillRect(hdc, &menu_rect, brush);
+                            let _ = DeleteObject(brush.into());
+                            let _ = ReleaseDC(Some(hwnd), hdc);
+
+                            use windows::Win32::UI::WindowsAndMessaging::DrawMenuBar;
+                            let _ = DrawMenuBar(hwnd);
+
+                            // Draw the bottom line after DrawMenuBar
+                            let hdc2 = GetWindowDC(Some(hwnd));
+                            let line_rect = RECT {
+                                left: 0,
+                                top: caption_height + border_height + menu_height + 2,
+                                right: window_width,
+                                bottom: caption_height + border_height + menu_height + 5,
+                            };
+                            let line_brush = CreateSolidBrush(DARK_MENU_BORDER);
+                            FillRect(hdc2, &line_rect, line_brush);
+                            let _ = DeleteObject(line_brush.into());
+                            let _ = ReleaseDC(Some(hwnd), hdc2);
+
+                            // Trigger WM_NCPAINT to ensure menu is redrawn
+                            use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+                            const WM_NCPAINT: u32 = 0x0085;
+                            let _ = PostMessageW(Some(hwnd), WM_NCPAINT, WPARAM(1), LPARAM(0));
+                        }
+                    }
                 }
 
                 LRESULT(0)
@@ -1372,6 +1728,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         };
                         let _ = EnableMenuItem(edit_menu, ID_EDIT_PASTE as u32, paste_flags);
                     }
+
+                    // Update dark mode menu checkmark
+                    let dark_mode_enabled = should_use_dark_mode();
+                    let check_state = if dark_mode_enabled {
+                        MENU_ITEM_FLAGS(0x00000008) // MF_CHECKED
+                    } else {
+                        MENU_ITEM_FLAGS(0x00000000) // MF_UNCHECKED
+                    };
+                    let _ = CheckMenuItem(hmenu, ID_VIEW_DARKMODE as u32, check_state.0);
                 }
                 LRESULT(0)
             }
@@ -1823,6 +2188,150 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                         LRESULT(0)
                     }
+                    ID_VIEW_DARKMODE => {
+                        // Toggle dark mode
+                        if let Ok(mut dark_mode) = DARK_MODE_ENABLED.lock() {
+                            *dark_mode = !*dark_mode;
+                        }
+
+                        // Apply dark mode settings immediately
+                        let use_dark = should_use_dark_mode();
+
+                        // Update title bar
+                        let dark_mode_value: i32 = if use_dark { 1 } else { 0 };
+                        let _ = DwmSetWindowAttribute(
+                            hwnd,
+                            DWMWA_USE_IMMERSIVE_DARK_MODE,
+                            &dark_mode_value as *const _ as *const _,
+                            std::mem::size_of::<i32>() as u32,
+                        );
+
+                        // Update menu dark mode
+                        set_preferred_app_mode(if use_dark { 1 } else { 0 });
+                        allow_dark_mode_for_window(hwnd, use_dark);
+                        flush_menu_themes();
+
+                        // Update RichEdit colors
+                        const EM_SETBKGNDCOLOR: u32 = 0x0443;
+                        const EM_SETCHARFORMAT: u32 = 0x0444;
+                        const SCF_ALL: usize = 0x0004;
+                        const CFM_COLOR: u32 = 0x40000000;
+
+                        #[repr(C)]
+                        #[allow(non_snake_case)]
+                        struct CHARFORMAT2W {
+                            cbsize: u32,
+                            dwmask: u32,
+                            dweffects: u32,
+                            yheight: i32,
+                            yoffset: i32,
+                            crtext: windows::Win32::Foundation::COLORREF,
+                            bcharset: u8,
+                            bpitchandfamily: u8,
+                            szfacename: [u16; 32],
+                            wweight: u16,
+                            sSpacing: i16,
+                            crbackcolor: windows::Win32::Foundation::COLORREF,
+                            lcid: u32,
+                            dwcookie: u32,
+                            sstyle: i16,
+                            wkerning: u16,
+                            bunits: u8,
+                            bAnimation: u8,
+                            bRevAuthor: u8,
+                            bUnderlineType: u8,
+                        }
+
+                        if use_dark {
+                            SendMessageW(
+                                edit_hwnd,
+                                EM_SETBKGNDCOLOR,
+                                Some(WPARAM(0)),
+                                Some(LPARAM(DARK_EDITOR_BG.0 as isize)),
+                            );
+
+                            let mut cf = CHARFORMAT2W {
+                                cbsize: std::mem::size_of::<CHARFORMAT2W>() as u32,
+                                dwmask: CFM_COLOR,
+                                crtext: DARK_EDITOR_TEXT,
+                                ..std::mem::zeroed()
+                            };
+
+                            SendMessageW(
+                                edit_hwnd,
+                                EM_SETCHARFORMAT,
+                                Some(WPARAM(SCF_ALL)),
+                                Some(LPARAM(&mut cf as *mut _ as isize)),
+                            );
+                        } else {
+                            SendMessageW(
+                                edit_hwnd,
+                                EM_SETBKGNDCOLOR,
+                                Some(WPARAM(1)),
+                                Some(LPARAM(0)),
+                            );
+
+                            let mut cf = CHARFORMAT2W {
+                                cbsize: std::mem::size_of::<CHARFORMAT2W>() as u32,
+                                dwmask: CFM_COLOR,
+                                crtext: LIGHT_EDITOR_TEXT,
+                                ..std::mem::zeroed()
+                            };
+
+                            SendMessageW(
+                                edit_hwnd,
+                                EM_SETCHARFORMAT,
+                                Some(WPARAM(SCF_ALL)),
+                                Some(LPARAM(&mut cf as *mut _ as isize)),
+                            );
+                        }
+
+                        // Redraw status bar and menu bar
+                        use windows::Win32::UI::WindowsAndMessaging::DrawMenuBar;
+                        let _ = DrawMenuBar(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), None, true);
+
+                        // Redraw the menu bottom line
+                        draw_menu_nc_bottom_line(hwnd);
+
+                        // Update status bar components
+                        let char_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(8)) as _);
+                        let sep1_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(24)) as _);
+                        let pos_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(32)) as _);
+                        let sep2_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(40)) as _);
+                        let encoding_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(48)) as _);
+                        let sep3_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(56)) as _);
+                        let zoom_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(64)) as _);
+                        let sep4_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(72)) as _);
+                        let linebreak_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(80)) as _);
+                        let separator_hwnd =
+                            HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(16)) as _);
+
+                        let _ = InvalidateRect(Some(char_hwnd), None, true);
+                        let _ = InvalidateRect(Some(sep1_hwnd), None, true);
+                        let _ = InvalidateRect(Some(pos_hwnd), None, true);
+                        let _ = InvalidateRect(Some(sep2_hwnd), None, true);
+                        let _ = InvalidateRect(Some(encoding_hwnd), None, true);
+                        let _ = InvalidateRect(Some(sep3_hwnd), None, true);
+                        let _ = InvalidateRect(Some(zoom_hwnd), None, true);
+                        let _ = InvalidateRect(Some(sep4_hwnd), None, true);
+                        let _ = InvalidateRect(Some(linebreak_hwnd), None, true);
+                        let _ = InvalidateRect(Some(separator_hwnd), None, true);
+
+                        // Update scrollbar theme
+                        set_window_theme(edit_hwnd, use_dark);
+
+                        LRESULT(0)
+                    }
                     _ => DefWindowProcW(hwnd, msg, wparam, lparam),
                 }
             }
@@ -1857,6 +2366,139 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+            0x0138 => {
+                // WM_CTLCOLORSTATIC - Color status bar controls
+                use windows::Win32::Graphics::Gdi::HDC;
+
+                let hdc = HDC(wparam.0 as isize as *mut core::ffi::c_void);
+
+                if should_use_dark_mode() {
+                    // Dark mode colors
+                    SetTextColor(hdc, DARK_EDITOR_TEXT);
+                    SetBkColor(hdc, DARK_EDITOR_BG);
+
+                    // Return dark brush for background
+                    if let Ok(mut brush) = DARK_BRUSH.lock() {
+                        if brush.is_none() {
+                            let hbrush = CreateSolidBrush(DARK_EDITOR_BG);
+                            *brush = Some(hbrush.0 as isize);
+                        }
+                        LRESULT(brush.unwrap())
+                    } else {
+                        DefWindowProcW(hwnd, msg, wparam, lparam)
+                    }
+                } else {
+                    // Use default system colors for light mode
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+            0x0014 => {
+                // WM_ERASEBKGND - Erase background with appropriate color
+                use windows::Win32::Graphics::Gdi::HDC;
+                let hdc = HDC(wparam.0 as isize as *mut core::ffi::c_void);
+
+                let bg_color = if should_use_dark_mode() {
+                    DARK_MENU_BG
+                } else {
+                    LIGHT_MENU_BG
+                };
+
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+
+                let brush = CreateSolidBrush(bg_color);
+                FillRect(hdc, &rect, brush);
+                let _ = DeleteObject(brush.into());
+
+                LRESULT(1) // Return non-zero to indicate we handled it
+            }
+            0x0085 => {
+                // WM_NCPAINT - Non-client area paint
+                let result = DefWindowProcW(hwnd, msg, wparam, lparam);
+                draw_menu_nc_bottom_line(hwnd);
+                result
+            }
+            0x0086 => {
+                // WM_NCACTIVATE - Non-client area activation
+                let result = DefWindowProcW(hwnd, msg, wparam, lparam);
+                draw_menu_nc_bottom_line(hwnd);
+
+                // Redraw edit control when window is activated or deactivated
+                let edit_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0)) as _);
+                if edit_hwnd != HWND::default() {
+                    let _ = InvalidateRect(Some(edit_hwnd), None, true);
+                }
+
+                result
+            }
+            0x0232 => {
+                // WM_EXITSIZEMOVE - User has finished resizing/moving window
+                if should_use_dark_mode() {
+                    use windows::Win32::Graphics::Gdi::{GetWindowDC, ReleaseDC};
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        GetSystemMetrics, SYSTEM_METRICS_INDEX,
+                    };
+
+                    let hdc = GetWindowDC(Some(hwnd));
+                    let caption_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(4)); // SM_CYCAPTION
+                    let menu_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(15)); // SM_CYMENU
+                    let border_height = GetSystemMetrics(SYSTEM_METRICS_INDEX(8)); // SM_CYFRAME
+
+                    let mut window_rect = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut window_rect);
+                    let window_width = window_rect.right - window_rect.left;
+
+                    let menu_rect = RECT {
+                        left: 0,
+                        top: caption_height + border_height,
+                        right: window_width,
+                        bottom: caption_height + border_height + menu_height + 0,
+                    };
+
+                    let brush = CreateSolidBrush(DARK_MENU_BG);
+                    FillRect(hdc, &menu_rect, brush);
+                    let _ = DeleteObject(brush.into());
+                    let _ = ReleaseDC(Some(hwnd), hdc);
+
+                    use windows::Win32::UI::WindowsAndMessaging::DrawMenuBar;
+                    let _ = DrawMenuBar(hwnd);
+
+                    // Draw the bottom line after DrawMenuBar
+                    let hdc2 = GetWindowDC(Some(hwnd));
+                    let line_rect = RECT {
+                        left: 0,
+                        top: caption_height + border_height + menu_height + 2,
+                        right: window_width,
+                        bottom: caption_height + border_height + menu_height + 5,
+                    };
+                    let line_brush = CreateSolidBrush(DARK_MENU_BORDER);
+                    FillRect(hdc2, &line_rect, line_brush);
+                    let _ = DeleteObject(line_brush.into());
+                    let _ = ReleaseDC(Some(hwnd), hdc2);
+                }
+
+                // Update status bar after resize
+                let edit_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(0)) as _);
+                let char_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(8)) as _);
+                let pos_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(32)) as _);
+                let encoding_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(48)) as _);
+                let zoom_hwnd = HWND(GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(64)) as _);
+                let current_encoding = if let Ok(enc) = CURRENT_ENCODING.lock() {
+                    *enc
+                } else {
+                    FileEncoding::Utf8
+                };
+                update_status_bar(
+                    edit_hwnd,
+                    char_hwnd,
+                    pos_hwnd,
+                    encoding_hwnd,
+                    zoom_hwnd,
+                    current_encoding,
+                );
+
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_CLOSE => {
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
@@ -1881,8 +2523,6 @@ fn main() {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
         let class_name = "NotepadWindowClass\0".encode_utf16().collect::<Vec<_>>();
 
-        const COLOR_BTNFACE: SYS_COLOR_INDEX = SYS_COLOR_INDEX(15);
-
         let hicon =
             LoadIconW(Some(HINSTANCE(hinstance.0)), PCWSTR(std::ptr::null())).unwrap_or_default();
 
@@ -1894,7 +2534,7 @@ fn main() {
             hInstance: HINSTANCE(hinstance.0),
             hIcon: hicon,
             hCursor: Default::default(),
-            hbrBackground: HBRUSH(GetSysColorBrush(COLOR_BTNFACE).0),
+            hbrBackground: HBRUSH::default(), // No background brush, use WM_ERASEBKGND
             lpszMenuName: PCWSTR::null(),
             lpszClassName: PCWSTR(class_name.as_ptr()),
         };
