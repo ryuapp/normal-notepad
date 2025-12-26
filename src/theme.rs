@@ -1,8 +1,8 @@
 use std::sync::{Mutex, Once, OnceLock};
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Foundation::{COLORREF, HWND};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::HMODULE;
 
 // Dark mode colors
 pub const DARK_MENU_BG: COLORREF = COLORREF(0x00202020);
@@ -86,7 +86,9 @@ pub fn set_preferred_app_mode(mode: i32) {
     unsafe {
         if let Some(huxtheme) = get_uxtheme_handle() {
             // Ordinal 135 = SetPreferredAppMode
-            if let Some(func_addr) = GetProcAddress(huxtheme, windows::core::PCSTR(135 as *const u8)) {
+            if let Some(func_addr) =
+                GetProcAddress(huxtheme, windows::core::PCSTR(135 as *const u8))
+            {
                 type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
                 let func: SetPreferredAppMode = std::mem::transmute(func_addr);
                 func(mode);
@@ -100,7 +102,9 @@ pub fn allow_dark_mode_for_window(hwnd: HWND, enabled: bool) {
     unsafe {
         if let Some(huxtheme) = get_uxtheme_handle() {
             // Ordinal 133 = AllowDarkModeForWindow
-            if let Some(func_addr) = GetProcAddress(huxtheme, windows::core::PCSTR(133 as *const u8)) {
+            if let Some(func_addr) =
+                GetProcAddress(huxtheme, windows::core::PCSTR(133 as *const u8))
+            {
                 type AllowDarkModeForWindow = unsafe extern "system" fn(HWND, i32) -> i32;
                 let func: AllowDarkModeForWindow = std::mem::transmute(func_addr);
                 func(hwnd, if enabled { 1 } else { 0 });
@@ -114,7 +118,9 @@ pub fn flush_menu_themes() {
     unsafe {
         if let Some(huxtheme) = get_uxtheme_handle() {
             // Ordinal 136 = FlushMenuThemes
-            if let Some(func_addr) = GetProcAddress(huxtheme, windows::core::PCSTR(136 as *const u8)) {
+            if let Some(func_addr) =
+                GetProcAddress(huxtheme, windows::core::PCSTR(136 as *const u8))
+            {
                 type FlushMenuThemes = unsafe extern "system" fn();
                 let func: FlushMenuThemes = std::mem::transmute(func_addr);
                 func();
@@ -128,8 +134,11 @@ pub fn set_window_theme(hwnd: HWND, dark_mode: bool) {
     unsafe {
         if let Some(huxtheme) = get_uxtheme_handle() {
             let func_name = b"SetWindowTheme\0";
-            if let Some(func_addr) = GetProcAddress(huxtheme, windows::core::PCSTR(func_name.as_ptr())) {
-                type SetWindowThemeFn = unsafe extern "system" fn(HWND, *const u16, *const u16) -> i32;
+            if let Some(func_addr) =
+                GetProcAddress(huxtheme, windows::core::PCSTR(func_name.as_ptr()))
+            {
+                type SetWindowThemeFn =
+                    unsafe extern "system" fn(HWND, *const u16, *const u16) -> i32;
                 let func: SetWindowThemeFn = std::mem::transmute(func_addr);
 
                 if dark_mode {

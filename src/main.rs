@@ -23,10 +23,10 @@ use status_bar::update_status_bar;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use theme::{
+    DARK_EDITOR_BG, DARK_EDITOR_TEXT, DARK_MENU_BG, DARK_MENU_BORDER, DARK_MENU_HOVER,
+    DARK_MENU_TEXT, DARK_MENU_TEXT_DISABLED, DARK_MODE_ENABLED, LIGHT_EDITOR_TEXT, LIGHT_MENU_BG,
     allow_dark_mode_for_window, flush_menu_themes, set_preferred_app_mode, set_window_theme,
-    should_use_dark_mode, DARK_EDITOR_BG, DARK_EDITOR_TEXT, DARK_MENU_BG, DARK_MENU_BORDER,
-    DARK_MENU_HOVER, DARK_MENU_TEXT, DARK_MENU_TEXT_DISABLED, DARK_MODE_ENABLED,
-    LIGHT_EDITOR_TEXT, LIGHT_MENU_BG,
+    should_use_dark_mode,
 };
 
 // Global variables for file state
