@@ -1,7 +1,12 @@
 [package]
-name = "normal-notepad"
+name = "nn"
 version = "0.1.0"
 edition = "2024"
+
+[package.metadata.winresource]
+ProductName = "Normal Notepad"
+FileDescription = "Normal Notepad"
+LegalCopyright = "© Ryu. All rights reserved."
 
 [dependencies]
 windows = { version = "0.62.2", features = [
@@ -21,7 +26,7 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [build-dependencies]
-winresource = "0.1"
+winresource = "0.1.28"
 
 [profile.release]
 lto = true
